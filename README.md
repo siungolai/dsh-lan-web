@@ -72,7 +72,7 @@ dsh-lan-web:
 
 - 一期为明文 HTTP：同网段设备理论上可嗅探流量（含你的 DSH 会话内容）。仅限家庭/办公可信网络；公共 WiFi 请勿开启。敏感网络建议叠加 Tailscale 等加密隧道。
 - **Login gate boundary / 登录门边界（必读）**：The login gate is a **two-layer UX + route gate, not a transport-layer interception** — a full-screen login mask in the browser plus route checks on the plugin's own `/api/lan-web/*` endpoints. It does **NOT** block DSH's real APIs: an unauthenticated LAN device can still fetch the GUI static assets and call any `/api` endpoint the platform trust fence permits (including command execution). 登录门是「浏览器全屏遮罩 + 插件自有入口校验」双执行层，**不是传输层拦截**：未登录的局域网设备仍可触达 GUI 静态资源与信任围栏放行的 DSH `/api` 接口（含命令执行）。仅在可信局域网启用本插件，不可信网络请叠加加密隧道（如 Tailscale）。
-- DSH 传输层信任围栏（loopback/trustedHosts 校验）仍生效，未知 Host 一律 403。
+- DSH 传输层信任围栏（loopback/trustedHosts 校验）仍生效：核心 `/api/*` 对未知 Host 一律 403；插件自有入口（`/api/lan-web/*`、`/lan`）对未知 Host 一律 401（登录门，与围栏独立生效）；静态页面可达但本身不含数据（数据全在 `/api`）。
 - 未设置密码时 LAN 访问默认拒绝（fail-closed）。
 - 改密码会立即使所有已登录设备失效。
 
