@@ -8,6 +8,8 @@
  * The 0.0.0.0 binding itself lives in cordis.patch.yml (webserver row override).
  */
 import type { Context } from '@deepseek-ai/cordis'
+// Side-effect type import: dsh-host-webserver augments Context with `webServer`.
+import type {} from '@deepseek-ai/dsh-host-webserver'
 
 /** Fallback UUID v4 for non-secure contexts (LAN plain HTTP). */
 function uuidV4Fallback(): string {

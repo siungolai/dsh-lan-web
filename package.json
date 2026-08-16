@@ -1,0 +1,9 @@
+{
+  "name": "dsh-lan-web-monorepo",
+  "private": true,
+  "description": "Root package hosting shared build tooling for dsh-lan-web (shared/tsdown.client.ts preset).",
+  "type": "module",
+  "devDependencies": {
+    "lightningcss": "^1.32.0"
+  }
+}
