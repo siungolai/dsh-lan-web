@@ -24,11 +24,38 @@ export const name = 'dsh-lan-web'
 
 export const inject = ['webServer']
 
+/**
+ * Mobile-UA redirect injected into the GUI index.html: a phone opening the
+ * main address goes straight to the /lan mobile surface BEFORE any plugin
+ * client bundle loads (the desktop GUI + every UI plugin stays desktop-only;
+ * /lan is a self-contained bundle that loads none of them). Desktop UAs are
+ * untouched; `?desktop=1` or the dsh_lan_web_ui=desktop cookie opt out.
+ */
+const MOBILE_REDIRECT_SCRIPT = `<script data-dsh-lan-web="ua-redirect">
+(function () {
+  var mobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || navigator.maxTouchPoints >= 2;
+  if (!mobile) return;
+  var path = location.pathname;
+  if (path === '/lan' || path.indexOf('/lan/') === 0) return;
+  if (/(?:desktop|full)=1/.test(location.search)) return;
+  if (document.cookie.indexOf('dsh_lan_web_ui=desktop') !== -1) return;
+  try { document.cookie = 'dsh_lan_web_ui=mobile; path=/; max-age=31536000'; } catch (e) {}
+  location.replace('/lan');
+})();
+</script>`
+
 export function apply(ctx: Context) {
   // M1: polyfill for the browser GUI on LAN plain HTTP (idempotent guard).
   ctx.effect(() =>
     ctx.webServer.tapIndex((html: string) =>
       html.includes('randomUUID') ? html : html.replace('</head>', `${POLYFILL_SCRIPT}</head>`),
+    ),
+  )
+  // M5: phones hitting the main address land on the mobile surface instead of
+  // the plugin-heavy desktop GUI (desktop untouched; /lan is self-contained).
+  ctx.effect(() =>
+    ctx.webServer.tapIndex((html: string) =>
+      html.includes('ua-redirect') ? html : html.replace('</head>', `${MOBILE_REDIRECT_SCRIPT}</head>`),
     ),
   )
 

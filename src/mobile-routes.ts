@@ -33,10 +33,12 @@ const APP_SHELL = `<!doctype html>
 ${VIEWPORT_META}
 <meta name="theme-color" content="#0f1115" />
 <title>DSH 移动端</title>
-<style>html,body{margin:0;height:100%;background:#0f1115;color:#e6e6e6;font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;-webkit-text-size-adjust:100%}</style>
+<style>html,body{margin:0;height:100%;background:#0f1115;color:#e6e6e6;font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;-webkit-text-size-adjust:100%}
+  .desktop-link{position:fixed;bottom:calc(env(safe-area-inset-bottom) + 6px);right:10px;font-size:12px;color:#5b6472;text-decoration:none;padding:8px;z-index:2147483001}</style>
 </head>
 <body>
 <div id="root"></div>
+<a class="desktop-link" href="/?desktop=1" onclick="document.cookie='dsh_lan_web_ui=desktop; path=/; max-age=31536000'">桌面版 ›</a>
 <script type="module" src="/lan/app.js"></script>
 </body>
 </html>`
@@ -59,6 +61,7 @@ ${VIEWPORT_META}
   input{width:100%;min-height:44px;padding:0 14px;font-size:16px;border-radius:8px;border:1px solid #333a45;background:#12151b;color:#e6e6e6;box-sizing:border-box;outline:none}
   button{width:100%;min-height:44px;margin-top:18px;font-size:16px;font-weight:600;border-radius:8px;border:none;background:#3b82f6;color:#fff}
   .err{margin-top:12px;font-size:13px;color:#f87171;display:none}
+  .desktop-link{position:fixed;bottom:calc(env(safe-area-inset-bottom) + 6px);right:10px;font-size:12px;color:#5b6472;text-decoration:none;padding:8px;z-index:2147483001}
 </style>
 </head>
 <body>
@@ -70,6 +73,7 @@ ${VIEWPORT_META}
   <button id="go">登录</button>
   <p class="err" id="err"></p>
 </div>
+<a class="desktop-link" href="/?desktop=1" onclick="document.cookie='dsh_lan_web_ui=desktop; path=/; max-age=31536000'">桌面版 ›</a>
 <script>
 (function () {
   var pw = document.getElementById('pw');

@@ -51,12 +51,18 @@ describe('host half activation', () => {
     ctx.plugin(hostPlugin as never) // {name, inject: ['webServer'], apply}
     await new Promise((resolve) => setTimeout(resolve, 20))
     const web = ctx.get('webServer', false) as unknown as WebServerMock | undefined
-    expect(web?.taps.length).toBe(1)
-    // polyfill tap: injects the randomUUID guard into </head>
+    expect(web?.taps.length).toBe(2)
     const html = '<html><head></head></html>'
-    const out = web.taps[0]!(html)
-    expect(out).toContain('randomUUID')
-    expect(out).toContain('</head>')
+    // polyfill tap: injects the randomUUID guard into </head>
+    const polyfill = web.taps.find((t) => t(html).includes('randomUUID'))
+    expect(polyfill).toBeDefined()
+    expect(polyfill!(html)).toContain('</head>')
+    // mobile-UA tap: redirects phones off the plugin-heavy desktop GUI to /lan
+    const redirect = web.taps.find((t) => t(html).includes('ua-redirect'))
+    expect(redirect).toBeDefined()
+    const out = redirect!(html)
+    expect(out).toContain("location.replace('/lan')")
+    expect(out).toContain("dsh_lan_web_ui=desktop")
   })
 
   it('registers the /api/lan-web prefix route while the async store load settles', async () => {
