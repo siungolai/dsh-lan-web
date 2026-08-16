@@ -1,7 +1,7 @@
 {
   "name": "dsh-lan-web",
   "description": "Secure LAN & mobile access for the DeepSeek Harness web GUI: LAN binding, password login gate, persistent sessions, device management, mobile-friendly layout",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
