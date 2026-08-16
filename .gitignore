@@ -1,5 +1,6 @@
 node_modules/
-node_modules.nosync/   # iCloud .nosync 目录（避免同步 dev 依赖）
+# iCloud .nosync 目录（避免同步 dev 依赖）
+node_modules.nosync/
 lib/
 dist/
 *.log
