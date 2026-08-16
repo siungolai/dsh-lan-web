@@ -37,6 +37,23 @@ describe('deriveMessages', () => {
     expect(msgs[1].text).toBe('最终答案')
   })
 
+  it('derives approval cards and resolves them', () => {
+    const msgs = deriveMessages([
+      entry(ev('approval/asked', { id: 'ap1', toolName: 'bash', reason: '执行远程命令' }, 5)),
+      entry(ev('approval/decided', { id: 'ap1' }, 6)),
+    ])
+    expect(msgs.map((m) => m.kind)).toEqual(['approval', 'approval'])
+    expect(msgs[0]).toMatchObject({ kind: 'approval', text: 'bash：执行远程命令', done: false })
+    expect(msgs[1].done).toBe(true)
+  })
+
+  it('derives a todo summary card', () => {
+    const msgs = deriveMessages([
+      entry(ev('todo/write', { todos: [{ content: 'a', status: 'completed' }, { content: 'b', status: 'pending' }] }, 7)),
+    ])
+    expect(msgs[0]).toMatchObject({ kind: 'todo', text: '任务清单（1/2 完成）' })
+  })
+
   it('falls back to the tool name when the view lacks a title', () => {
     const msgs = deriveMessages([entry(ev('tool/call', { turn: 1, step: 1, callId: 'c', name: 'read', arguments: '{"file":"a.txt"}' }, 2))])
     expect(msgs[0]).toMatchObject({ kind: 'tool-call' })

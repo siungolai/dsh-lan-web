@@ -19,11 +19,11 @@ import {
   type SessionSummary,
   type SkillSummary,
 } from './api'
-import { MuxClient, type MuxEventFrame, type MuxFrame } from './mux'
+import { MuxClient, type ApprovalRequestedFrame, type ApprovalResolvedFrame, type MuxEventFrame, type MuxFrame, type QuestionRequestedFrame } from './mux'
 import { useViewport } from './useViewport'
 import { SkillMenu, detectSkillGesture, filterSkills, replaceGesture } from './skill-menu'
 
-export type MessageKind = 'text' | 'reasoning' | 'tool-call' | 'tool-result'
+export type MessageKind = 'text' | 'reasoning' | 'tool-call' | 'tool-result' | 'tool-pending' | 'approval' | 'question' | 'todo'
 
 export interface Message {
   key: string
@@ -138,6 +138,38 @@ export function deriveMessages(entries: HistoryEntry[]): Message[] {
         done: true,
         seq: event.seq,
         card: (view as { view?: { card?: string } } | undefined)?.view?.card,
+      })
+    } else if (event.type === 'approval/asked') {
+      const ad = data as { id?: unknown; toolName?: unknown; reason?: unknown }
+      out.push({
+        key: `ap-${String(ad.id ?? event.seq)}`,
+        kind: 'approval',
+        role: 'assistant',
+        text: `${typeof ad.toolName === 'string' ? ad.toolName : '工具'}${typeof ad.reason === 'string' ? `：${ad.reason}` : ''}`,
+        done: false,
+        seq: event.seq,
+      })
+    } else if (event.type === 'approval/decided') {
+      const ad = data as { id?: unknown }
+      out.push({
+        key: `ap-${String(ad.id ?? event.seq)}`,
+        kind: 'approval',
+        role: 'assistant',
+        text: '审批已处理',
+        done: true,
+        seq: event.seq,
+      })
+    } else if (event.type === 'todo/write') {
+      const td = data as { todos?: Array<{ content?: unknown; status?: unknown }> }
+      const todos = Array.isArray(td.todos) ? td.todos : []
+      const doneCount = todos.filter((t) => t.status === 'completed').length
+      out.push({
+        key: `tw-${event.seq}`,
+        kind: 'todo',
+        role: 'assistant',
+        text: todos.length > 0 ? `任务清单（${doneCount}/${todos.length} 完成）` : '任务清单',
+        done: true,
+        seq: event.seq,
       })
     } else if (event.type === 'assistant/chunk' && data.chunk?.type === 'reasoning-delta' && typeof data.chunk.text === 'string') {
       const turn = data.turn ?? 0
@@ -335,8 +367,40 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
     const client = new MuxClient({
       onFrame: (frame: MuxFrame) => {
         if (frame.type === 'session/event' && 'sessionId' in frame && 'event' in frame) {
-          const f = frame as MuxEventFrame
-          applyEvent(f)
+          applyEvent(frame as MuxEventFrame)
+          return
+        }
+        // Direct mux frames: pending approvals / questions are replayed on
+        // connect and pushed live; they never appear in the session/event
+        // stream (verified: apiproxy mux() pushes them to every mux queue).
+        if (frame.type === 'approval/requested') {
+          const f = frame as ApprovalRequestedFrame
+          const v = viewRef.current
+          if (v.kind !== 'conv' || v.sessionId !== f.sessionId) return
+          const key = `ap-${f.approvalId}`
+          setMessages((prev) => {
+            if (prev.some((m) => m.key === key && m.kind === 'approval')) return prev
+            return [...prev, { key, kind: 'approval', role: 'assistant', text: f.reason !== undefined && f.reason.length > 0 ? `${f.toolName}：${f.reason}` : f.toolName, done: false, seq: 0 }]
+          })
+          scrollToBottomSoon()
+        } else if (frame.type === 'approval/resolved') {
+          const f = frame as ApprovalResolvedFrame
+          const key = `ap-${f.approvalId}`
+          setMessages((prev) => prev.map((m) => (m.key === key && m.kind === 'approval' ? { ...m, done: true } : m)))
+        } else if (frame.type === 'question/requested') {
+          const f = frame as QuestionRequestedFrame
+          const v = viewRef.current
+          if (v.kind !== 'conv' || v.sessionId !== f.sessionId) return
+          const q = f.questions[0]
+          if (q === undefined) return
+          const key = `q-${q.id}`
+          setMessages((prev) => {
+            if (prev.some((m) => m.key === key && m.kind === 'question')) return prev
+            return [...prev, { key, kind: 'question', role: 'assistant', text: q.question, done: false, seq: 0 }]
+          })
+          scrollToBottomSoon()
+        } else if (frame.type === 'question/resolved') {
+          setMessages((prev) => prev.map((m) => (m.kind === 'question' && !m.done ? { ...m, done: true } : m)))
         }
       },
       onResync: () => {
@@ -363,7 +427,7 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
       if (event.seq <= appliedSeqRef.current) return
       appliedSeqRef.current = event.seq
       scheduleListRefresh()
-      const data = (event.data ?? {}) as { content?: unknown; turn?: number; chunk?: { type?: string; text?: string; index?: number }; name?: string; arguments?: string }
+      const data = (event.data ?? {}) as { content?: unknown; turn?: number; chunk?: { type?: string; text?: string; index?: number; name?: string }; name?: string; arguments?: string }
 
       const flushReasoning = (turn: number): void => {
         setMessages((prev) => prev.map((m) => (m.key === reasoningKey(turn) && m.kind === 'reasoning' ? { ...m, done: true } : m)))
@@ -384,6 +448,16 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
             return [...prev, { key, kind: 'reasoning', role: 'assistant', text: data.chunk!.text!, done: false, seq: event.seq }]
           })
           scrollToBottomSoon()
+        } else if (data.chunk?.type === 'tool-call-delta' && typeof data.chunk.name === 'string') {
+          const turn = data.turn ?? 0
+          const key = `tcp-${turn}`
+          const label = `调用工具 ${data.chunk.name}…`
+          setMessages((prev) => {
+            const existing = prev.find((m) => m.key === key && m.kind === 'tool-pending')
+            if (existing !== undefined) return prev
+            return [...prev, { key, kind: 'tool-pending', role: 'assistant', text: label, done: false, seq: event.seq }]
+          })
+          scrollToBottomSoon()
         } else if (data.chunk?.type === 'text-delta' && typeof data.chunk.text === 'string') {
           flushReasoning(data.turn ?? 0)
           const turn = data.turn ?? 0
@@ -402,7 +476,8 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
         flushReasoning(turn)
         const viewBlock = frame.view as { view?: { card?: string } } | undefined
         setMessages((prev) => [
-          ...prev,
+          // Drop the streaming placeholder for this turn, keep the real card.
+          ...prev.filter((m) => !(m.kind === 'tool-pending' && m.key === `tcp-${turn}`)),
           {
             key: `tc-${event.seq}`,
             kind: 'tool-call',
@@ -438,6 +513,34 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
           { key, kind: 'text', role: 'assistant', text: final, done: true, seq: event.seq },
         ])
         scrollToBottomSoon()
+      } else if (event.type === 'approval/asked') {
+        const ad = data as { id?: unknown; toolName?: unknown; reason?: unknown }
+        setMessages((prev) => [
+          ...prev,
+          {
+            key: `ap-${String(ad.id ?? event.seq)}`,
+            kind: 'approval',
+            role: 'assistant',
+            text: `${typeof ad.toolName === 'string' ? ad.toolName : '工具'}${typeof ad.reason === 'string' ? `：${ad.reason}` : ''}`,
+            done: false,
+            seq: event.seq,
+          },
+        ])
+        scrollToBottomSoon()
+      } else if (event.type === 'approval/decided') {
+        const ad = data as { id?: unknown }
+        const key = `ap-${String(ad.id ?? '')}`
+        setMessages((prev) => prev.map((m) => (m.key === key && m.kind === 'approval' ? { ...m, done: true } : m)))
+      } else if (event.type === 'todo/write') {
+        const td = data as { todos?: Array<{ content?: unknown; status?: unknown }> }
+        const todos = Array.isArray(td.todos) ? td.todos : []
+        const doneCount = todos.filter((t) => t.status === 'completed').length
+        const key = `tw-${event.seq}`
+        setMessages((prev) => {
+          const existing = prev.find((m) => m.kind === 'todo' && m.key === key)
+          const card = { key, kind: 'todo' as const, role: 'assistant' as const, text: todos.length > 0 ? `任务清单（${doneCount}/${todos.length} 完成）` : '任务清单', done: true, seq: event.seq }
+          return existing !== undefined ? prev.map((m) => (m.key === key ? card : m)) : [...prev, card]
+        })
       } else if (event.type === 'turn/end') {
         const turn = data.turn ?? 0
         flushReasoning(turn)
@@ -609,6 +712,11 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
     toolResultCard: { display: 'flex', alignItems: 'flex-start', gap: 8, maxWidth: '88%', padding: '8px 12px', borderRadius: 10, borderLeft: '3px solid #3f6b4f', background: '#141a16', color: '#9aa0ab', fontSize: 13, minHeight: 36 },
     toolIcon: { flex: 'none', fontFamily: 'ui-monospace, Menlo, monospace', color: '#3b82f6', fontWeight: 700 },
     toolText: { overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as const, wordBreak: 'break-all' },
+    pendingCard: { display: 'flex', alignItems: 'center', gap: 8, maxWidth: '88%', padding: '8px 12px', borderRadius: 10, borderLeft: '3px solid #5b6472', background: '#15181d', color: '#7c8494', fontSize: 13, minHeight: 36 },
+    approvalCard: { display: 'flex', alignItems: 'center', gap: 8, maxWidth: '88%', padding: '8px 12px', borderRadius: 10, borderLeft: '3px solid #d97706', background: '#1d1810', color: '#e6c98a', fontSize: 13, minHeight: 36 },
+    approvalDone: { color: '#7c8494' },
+    questionCard: { display: 'flex', alignItems: 'flex-start', gap: 8, maxWidth: '88%', padding: '8px 12px', borderRadius: 10, borderLeft: '3px solid #2563eb', background: '#101623', color: '#a8c0ee', fontSize: 13, minHeight: 36 },
+    todoRow: { display: 'flex', alignItems: 'center', gap: 8, maxWidth: '88%', padding: '8px 12px', borderRadius: 10, background: 'none', border: '1px dashed #3a4150', color: '#9aa0ab', fontSize: 13, minHeight: 36 },
   }
 
   const streaming = messages.some((m) => !m.done)
@@ -665,6 +773,46 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
             <div style={style.empty}>发送第一条消息开始对话</div>
           ) : (
             messages.map((m) => {
+              if (m.kind === 'tool-pending') {
+                return (
+                  <div key={m.key} style={style.bubbleRow}>
+                    <div style={style.pendingCard}>
+                      <span style={style.toolIcon}>🔧</span>
+                      <span>{m.text}</span>
+                    </div>
+                  </div>
+                )
+              }
+              if (m.kind === 'approval') {
+                return (
+                  <div key={m.key} style={style.bubbleRow}>
+                    <div style={style.approvalCard}>
+                      <span>{m.done ? '✅' : '⏳'}</span>
+                      <span style={m.done ? style.approvalDone : undefined}>{m.done ? '审批已处理' : `等待审批：${m.text}`}</span>
+                    </div>
+                  </div>
+                )
+              }
+              if (m.kind === 'question') {
+                return (
+                  <div key={m.key} style={style.bubbleRow}>
+                    <div style={style.questionCard}>
+                      <span>{m.done ? '✅' : '❓'}</span>
+                      <span>{m.done ? '问题已回答' : `等待回答：${m.text}`}</span>
+                    </div>
+                  </div>
+                )
+              }
+              if (m.kind === 'todo') {
+                return (
+                  <div key={m.key} style={style.bubbleRow}>
+                    <button type="button" style={style.todoRow} onClick={() => toggleExpanded(m.key)}>
+                      <span>📋</span>
+                      <span>{m.text} {expanded.has(m.key) ? '▾' : '▸'}</span>
+                    </button>
+                  </div>
+                )
+              }
               if (m.kind === 'reasoning') {
                 const open = expanded.has(m.key)
                 return (

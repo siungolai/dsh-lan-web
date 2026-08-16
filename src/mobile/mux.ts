@@ -18,9 +18,43 @@ export interface MuxEventFrame {
   view?: unknown
 }
 
+export interface ApprovalRequestedFrame {
+  type: 'approval/requested'
+  sessionId: string
+  approvalId: string
+  toolName: string
+  callId?: string
+  reason?: string
+}
+
+export interface ApprovalResolvedFrame {
+  type: 'approval/resolved'
+  sessionId: string
+  approvalId: string
+  outcome: 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
+}
+
+export interface QuestionRequestedFrame {
+  type: 'question/requested'
+  sessionId: string
+  questions: Array<{ id: string; question: string; header?: string; detail?: string }>
+}
+
+export interface QuestionResolvedFrame {
+  type: 'question/resolved'
+  sessionId: string
+  questionRpcId: string
+  outcome: 'answered' | 'cancelled'
+}
+
 export type MuxFrame =
   | { type: 'session/subscribed'; sessionId: string; lastSeq: number }
   | MuxEventFrame
+  | ApprovalRequestedFrame
+  | ApprovalResolvedFrame
+  | QuestionRequestedFrame
+  | QuestionResolvedFrame
+  | { type: 'session/queue' | 'session/jobs' | 'session/projection'; sessionId: string }
   | { type: 'stream/error' }
   | { type: string; [key: string]: unknown }
 
