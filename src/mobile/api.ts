@@ -133,3 +133,47 @@ export async function listSkills(sessionId: string): Promise<SkillSummary[]> {
   const value = await rpc<{ skills: SkillSummary[] }>('skill.list', { sessionId })
   return value.skills
 }
+
+/* ------------------------- models domain ------------------------- */
+
+export interface ModelReasoning {
+  efforts: Array<{ id: string; name: string; description?: string }>
+  defaultEffort?: string
+}
+
+export interface ModelInfo {
+  id: string
+  name: string
+  description?: string
+  reasoning?: ModelReasoning
+}
+
+export interface ModelGroup {
+  id: string
+  name: string
+  models: ModelInfo[]
+}
+
+export interface ModelSelection {
+  provider: string
+  model: string
+  reasoningEffort?: string
+}
+
+export interface ModelCatalog {
+  current: ModelSelection
+  routable: boolean
+  groups: ModelGroup[]
+  failures: Array<{ id: string; name: string; message: string }>
+}
+
+/** Current model + routable catalog for a session. */
+export async function listModels(sessionId: string): Promise<ModelCatalog> {
+  return rpc<ModelCatalog>('session.models', { sessionId })
+}
+
+/** Switch the session model (and optionally reasoning effort). */
+export async function selectModel(sessionId: string, selection: ModelSelection): Promise<ModelSelection> {
+  const value = await rpc<{ selected: ModelSelection }>('session.selectModel', { sessionId, ...selection })
+  return value.selected
+}

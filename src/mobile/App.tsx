@@ -9,12 +9,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   RpcError,
   createSession,
+  listModels,
   listSessions,
   listSkills,
+  selectModel,
   sendPrompt,
   sessionHistory,
   titleOf,
   type HistoryEntry,
+  type ModelCatalog,
+  type ModelSelection,
   type SessionEvent,
   type SessionSummary,
   type SkillSummary,
@@ -22,6 +26,7 @@ import {
 import { MuxClient, type ApprovalRequestedFrame, type ApprovalResolvedFrame, type MuxEventFrame, type MuxFrame, type QuestionRequestedFrame } from './mux'
 import { useViewport } from './useViewport'
 import { SkillMenu, detectSkillGesture, filterSkills, replaceGesture } from './skill-menu'
+import { ModelPicker } from './model-picker'
 
 export type MessageKind = 'text' | 'reasoning' | 'tool-call' | 'tool-result' | 'tool-pending' | 'approval' | 'question' | 'todo'
 
@@ -219,6 +224,9 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
   const [skillMenu, setSkillMenu] = useState<{ candidates: SkillSummary[]; loading: boolean; error: string | null } | null>(null)
+  const [modelSheet, setModelSheet] = useState(false)
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null)
+  const [modelLoading, setModelLoading] = useState(false)
   const skillsCache = useRef(new Map<string, SkillSummary[]>())
   const gestureRef = useRef<{ start: number; cursor: number; seq: number } | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -695,6 +703,38 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
     }
   }, [input, sending, onSessionExpired])
 
+  /* ------------------------- model picker ------------------------- */
+  const openModelSheet = useCallback(async (): Promise<void> => {
+    const v = viewRef.current
+    if (v.kind !== 'conv') return
+    setModelSheet(true)
+    if (modelCatalog !== null) return
+    setModelLoading(true)
+    try {
+      setModelCatalog(await listModels(v.sessionId))
+    } catch (error) {
+      if (error instanceof RpcError && error.status === 401) onSessionExpired()
+    } finally {
+      setModelLoading(false)
+    }
+  }, [modelCatalog, onSessionExpired])
+
+  const handleModelSelect = useCallback(
+    async (selection: ModelSelection): Promise<void> => {
+      const v = viewRef.current
+      if (v.kind !== 'conv') return
+      setModelSheet(false)
+      try {
+        const selected = await selectModel(v.sessionId, selection)
+        setModelCatalog((prev) => (prev === null ? prev : { ...prev, current: selected }))
+      } catch (error) {
+        if (error instanceof RpcError && error.status === 401) onSessionExpired()
+        else setSendError(error instanceof Error ? error.message : String(error))
+      }
+    },
+    [onSessionExpired],
+  )
+
   const handleNew = useCallback(async (): Promise<void> => {
     if (creating) return
     setCreating(true)
@@ -770,6 +810,9 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
     approvalDone: { color: '#7c8494' },
     questionCard: { display: 'flex', alignItems: 'flex-start', gap: 8, maxWidth: '88%', padding: '8px 12px', borderRadius: 10, borderLeft: '3px solid #2563eb', background: '#101623', color: '#a8c0ee', fontSize: 13, minHeight: 36 },
     todoRow: { display: 'flex', alignItems: 'center', gap: 8, maxWidth: '88%', padding: '8px 12px', borderRadius: 10, background: 'none', border: '1px dashed #3a4150', color: '#9aa0ab', fontSize: 13, minHeight: 36 },
+    toolbar: { display: 'flex', alignItems: 'center', gap: 8, padding: '4px 12px 0', background: '#14171d', flex: 'none' },
+    toolbarBtn: { display: 'flex', alignItems: 'center', gap: 6, minHeight: 40, padding: '0 12px', borderRadius: 8, background: '#1a1d24', border: '1px solid #2a303b', color: '#c3c7cf', fontSize: 13, fontFamily: 'inherit' },
+    toolbarIcon: { fontSize: 14 },
   }
 
   const streaming = messages.some((m) => !m.done)
@@ -904,7 +947,21 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
             加载更早的消息
           </button>
         )}
+        <div style={style.toolbar}>
+          <button type="button" style={style.toolbarBtn} onClick={() => void openModelSheet()}>
+            <span style={style.toolbarIcon}>🤖</span>
+            <span>{modelCatalog !== null ? modelCatalog.current.model.split('/').pop() : '模型'}</span>
+          </button>
+          <div style={{ flex: 1 }} />
+          <button type="button" style={style.toolbarBtn} disabled aria-label="沙箱权限（即将支持）">
+            <span style={style.toolbarIcon}>🔒</span>
+            <span>权限</span>
+          </button>
+        </div>
         <div style={{ ...style.composer, position: 'relative' }}>
+          {modelSheet && modelCatalog !== null && (
+            <ModelPicker catalog={modelCatalog} current={modelCatalog.current} onSelect={(sel) => void handleModelSelect(sel)} onClose={() => setModelSheet(false)} />
+          )}
           {skillMenu !== null && (
             <SkillMenu
               skills={skillMenu.candidates}
