@@ -118,3 +118,18 @@ export async function sendPrompt(sessionId: string, text: string): Promise<void>
     content: [{ type: 'text', text }],
   })
 }
+
+/* ------------------------- skills domain ------------------------- */
+
+export interface SkillSummary {
+  name: string
+  description: string
+  whenToUse?: string
+  modelInvocable: boolean
+}
+
+/** User-invocable skills for a session (the desktop / menu's source). */
+export async function listSkills(sessionId: string): Promise<SkillSummary[]> {
+  const value = await rpc<{ skills: SkillSummary[] }>('skill.list', { sessionId })
+  return value.skills
+}

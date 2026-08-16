@@ -10,15 +10,18 @@ import {
   RpcError,
   createSession,
   listSessions,
+  listSkills,
   sendPrompt,
   sessionHistory,
   titleOf,
   type HistoryEntry,
   type SessionEvent,
   type SessionSummary,
+  type SkillSummary,
 } from './api'
 import { MuxClient, type MuxFrame } from './mux'
 import { useViewport } from './useViewport'
+import { SkillMenu, detectSkillGesture, filterSkills, replaceGesture } from './skill-menu'
 
 export interface Message {
   key: string
@@ -84,6 +87,10 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
   const [input, setInput] = useState('')
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
+  const [skillMenu, setSkillMenu] = useState<{ candidates: SkillSummary[]; loading: boolean; error: string | null } | null>(null)
+  const skillsCache = useRef(new Map<string, SkillSummary[]>())
+  const gestureRef = useRef<{ start: number; cursor: number; seq: number } | null>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [hasMore, setHasMore] = useState(false)
   const [loadingHistory, setLoadingHistory] = useState(false)
   const [creating, setCreating] = useState(false)
@@ -299,6 +306,68 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
     })
   }, [])
 
+  /* ------------------------- skill menu (desktop / parity) ------------------------- */
+  const openSkillMenu = useCallback(
+    async (sessionId: string, prefix: string, start: number, cursor: number): Promise<void> => {
+      const seq = gestureRef.current?.seq ?? 0
+      const mySeq = seq + 1
+      gestureRef.current = { start, cursor, seq: mySeq }
+      setSkillMenu((prev) => (prev === null ? { candidates: [], loading: true, error: null } : prev))
+      let skills = skillsCache.current.get(sessionId)
+      if (skills === undefined) {
+        try {
+          skills = await listSkills(sessionId)
+          skillsCache.current.set(sessionId, skills)
+        } catch (error) {
+          if (gestureRef.current?.seq !== mySeq) return
+          setSkillMenu({ candidates: [], loading: false, error: error instanceof Error ? error.message : String(error) })
+          return
+        }
+      }
+      if (gestureRef.current?.seq !== mySeq) return
+      setSkillMenu({ candidates: filterSkills(skills, prefix), loading: false, error: null })
+    },
+    [],
+  )
+
+  const handleComposerChange = useCallback(
+    (e: { target: { value: string; selectionStart: number | null } }): void => {
+      const value = e.target.value
+      const cursor = e.target.selectionStart ?? value.length
+      setInput(value)
+      const v = viewRef.current
+      if (v.kind !== 'conv') return
+      const gesture = detectSkillGesture(value, cursor)
+      if (gesture === null) {
+        setSkillMenu(null)
+        gestureRef.current = null
+        return
+      }
+      void openSkillMenu(v.sessionId, gesture.prefix, gesture.start, cursor)
+    },
+    [openSkillMenu],
+  )
+
+  const pickSkill = useCallback(
+    (skill: SkillSummary): void => {
+      const g = gestureRef.current
+      if (g === null) return
+      const next = replaceGesture(input, g.start, g.cursor, skill.name)
+      setInput(next)
+      setSkillMenu(null)
+      gestureRef.current = null
+      requestAnimationFrame(() => {
+        const ta = textareaRef.current
+        if (ta !== null) {
+          ta.focus()
+          const pos = g.start + skill.name.length + 2
+          ta.setSelectionRange(pos, pos)
+        }
+      })
+    },
+    [input],
+  )
+
   /* ------------------------- actions ------------------------- */
   const handleSend = useCallback(async (): Promise<void> => {
     const text = input.trim()
@@ -306,6 +375,8 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
     if (text.length === 0 || v.kind !== 'conv' || sending) return
     setSending(true)
     setSendError(null)
+    setSkillMenu(null)
+    gestureRef.current = null
     try {
       await sendPrompt(v.sessionId, text)
       setInput('')
@@ -441,13 +512,30 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
             加载更早的消息
           </button>
         )}
-        <div style={style.composer}>
+        <div style={{ ...style.composer, position: 'relative' }}>
+          {skillMenu !== null && (
+            <SkillMenu
+              skills={skillMenu.candidates}
+              loading={skillMenu.loading}
+              error={skillMenu.error}
+              onPick={pickSkill}
+              onClose={() => setSkillMenu(null)}
+            />
+          )}
           <div style={style.composerRow}>
             <textarea
+              ref={textareaRef}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={handleComposerChange}
+              onBlur={() => {
+                // Give the menu a moment to receive the tap before closing.
+                setTimeout(() => setSkillMenu(null), 200)
+              }}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
+                if (e.key === 'Escape') {
+                  setSkillMenu(null)
+                  gestureRef.current = null
+                } else if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault()
                   void handleSend()
                 }
