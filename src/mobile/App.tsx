@@ -7,11 +7,14 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  PERMISSION_ICONS,
   RpcError,
   createSession,
+  executeCommand,
   listModels,
   listSessions,
   listSkills,
+  permissionsOf,
   selectModel,
   sendPrompt,
   sessionHistory,
@@ -19,6 +22,7 @@ import {
   type HistoryEntry,
   type ModelCatalog,
   type ModelSelection,
+  type PermissionsState,
   type SessionEvent,
   type SessionSummary,
   type SkillSummary,
@@ -27,6 +31,7 @@ import { MuxClient, type ApprovalRequestedFrame, type ApprovalResolvedFrame, typ
 import { useViewport } from './useViewport'
 import { SkillMenu, detectSkillGesture, filterSkills, replaceGesture } from './skill-menu'
 import { ModelPicker } from './model-picker'
+import { PermissionPicker } from './permission-picker'
 
 export type MessageKind = 'text' | 'reasoning' | 'tool-call' | 'tool-result' | 'tool-pending' | 'approval' | 'question' | 'todo'
 
@@ -227,6 +232,9 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
   const [modelSheet, setModelSheet] = useState(false)
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null)
   const [modelLoading, setModelLoading] = useState(false)
+  const [permissionSheet, setPermissionSheet] = useState(false)
+  const [permission, setPermission] = useState<PermissionsState | null>(null)
+  const permissionSeqRef = useRef(0)
   const skillsCache = useRef(new Map<string, SkillSummary[]>())
   const gestureRef = useRef<{ start: number; cursor: number; seq: number } | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -325,6 +333,8 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
         const result = await sessionHistory(sessionId, { maxMessages: HISTORY_PAGE })
         const derived = deriveMessages(result.events)
         setHasMore(result.hasMore)
+        const perms = permissionsOf(result.projections)
+        if (perms !== null) setPermission(perms)
         const last = result.events[result.events.length - 1]
         const loadedSeq = last !== undefined ? last.event.seq : 0
         // Never roll the guard backwards: live events may already have raised
@@ -360,6 +370,8 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
       try {
         const result = await sessionHistory(sessionId, { maxMessages: HISTORY_PAGE })
         const derived = deriveMessages(result.events)
+        const perms = permissionsOf(result.projections)
+        if (perms !== null) setPermission(perms)
         const last = result.events[result.events.length - 1]
         const loadedSeq = last !== undefined ? last.event.seq : 0
         appliedSeqRef.current = Math.max(appliedSeqRef.current, loadedSeq)
@@ -440,6 +452,15 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
           scrollToBottomSoon()
         } else if (frame.type === 'question/resolved') {
           setMessages((prev) => prev.map((m) => (m.kind === 'question' && !m.done ? { ...m, done: true } : m)))
+        } else if (frame.type === 'session/projection' && frame.key === 'permissions') {
+          // Live projection push (higher seq wins).
+          const proj = frame as { seq: number; value: unknown }
+          if (proj.seq <= permissionSeqRef.current) return
+          permissionSeqRef.current = proj.seq
+          const value = proj.value as { options?: PermissionsState['options']; currentValue?: string } | undefined
+          if (value !== undefined && Array.isArray(value.options) && typeof value.currentValue === 'string') {
+            setPermission({ options: value.options, currentValue: value.currentValue })
+          }
         }
       },
       onResync: () => {
@@ -735,6 +756,23 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
     [onSessionExpired],
   )
 
+  const handlePermissionSelect = useCallback(
+    async (value: string): Promise<void> => {
+      const v = viewRef.current
+      if (v.kind !== 'conv') return
+      setPermissionSheet(false)
+      try {
+        await executeCommand(v.sessionId, `/permission ${value}`)
+        // Optimistic local state; the projection frame confirms/replaces it.
+        setPermission((prev) => (prev === null ? prev : { ...prev, currentValue: value }))
+      } catch (error) {
+        if (error instanceof RpcError && error.status === 401) onSessionExpired()
+        else setSendError(error instanceof Error ? error.message : String(error))
+      }
+    },
+    [onSessionExpired],
+  )
+
   const handleNew = useCallback(async (): Promise<void> => {
     if (creating) return
     setCreating(true)
@@ -953,14 +991,17 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
             <span>{modelCatalog !== null ? modelCatalog.current.model.split('/').pop() : '模型'}</span>
           </button>
           <div style={{ flex: 1 }} />
-          <button type="button" style={style.toolbarBtn} disabled aria-label="沙箱权限（即将支持）">
-            <span style={style.toolbarIcon}>🔒</span>
-            <span>权限</span>
+          <button type="button" style={style.toolbarBtn} onClick={() => setPermissionSheet(true)} aria-label="沙箱权限">
+            <span style={style.toolbarIcon}>{PERMISSION_ICONS[permission?.currentValue ?? ''] ?? '🔒'}</span>
+            <span>{permission !== null ? PERMISSION_ICONS[permission.currentValue] ?? permission.currentValue : '权限'}</span>
           </button>
         </div>
         <div style={{ ...style.composer, position: 'relative' }}>
           {modelSheet && modelCatalog !== null && (
             <ModelPicker catalog={modelCatalog} current={modelCatalog.current} onSelect={(sel) => void handleModelSelect(sel)} onClose={() => setModelSheet(false)} />
+          )}
+          {permissionSheet && permission !== null && (
+            <PermissionPicker state={permission} onSelect={(value) => void handlePermissionSelect(value)} onClose={() => setPermissionSheet(false)} />
           )}
           {skillMenu !== null && (
             <SkillMenu

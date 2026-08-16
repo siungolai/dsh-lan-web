@@ -54,7 +54,8 @@ export type MuxFrame =
   | ApprovalResolvedFrame
   | QuestionRequestedFrame
   | QuestionResolvedFrame
-  | { type: 'session/queue' | 'session/jobs' | 'session/projection'; sessionId: string }
+  | { type: 'session/queue' | 'session/jobs'; sessionId: string }
+  | { type: 'session/projection'; sessionId: string; key: string; value: unknown; seq: number }
   | { type: 'stream/error' }
   | { type: string; [key: string]: unknown }
 

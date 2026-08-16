@@ -177,3 +177,34 @@ export async function selectModel(sessionId: string, selection: ModelSelection):
   const value = await rpc<{ selected: ModelSelection }>('session.selectModel', { sessionId, ...selection })
   return value.selected
 }
+
+/* ------------------------- permission / sandbox domain ------------------------- */
+
+export interface PermissionOption {
+  value: string
+  name: string
+  description?: string
+}
+
+export interface PermissionsState {
+  options: PermissionOption[]
+  currentValue: string
+}
+
+/** Execute a slash command (the ONLY sandbox write path; desktop parity). */
+export async function executeCommand(sessionId: string, line: string): Promise<void> {
+  await rpc('commands/execute', { args: { agentId: sessionId, line } })
+}
+
+export const PERMISSION_ICONS: Record<string, string> = {
+  'read-only': '📄',
+  'workspace-write': '✏️',
+  'danger-full-access': '⚡',
+}
+
+/** Read the permissions projection from a history response tail block. */
+export function permissionsOf(projections: SessionProjections | undefined): PermissionsState | null {
+  const value = projections?.values?.permissions as { options?: PermissionOption[]; currentValue?: string } | undefined
+  if (value === undefined || !Array.isArray(value.options) || typeof value.currentValue !== 'string') return null
+  return { options: value.options, currentValue: value.currentValue }
+}
