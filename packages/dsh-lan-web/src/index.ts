@@ -49,12 +49,21 @@ export function apply(ctx: Context) {
     filePath: path.join(harnessHome, 'dsh-lan-web.json'),
     getSessionDays: () => config.sessionDays,
   })
-  void store.load().then(() => {
-    registerLanWebRoutes(ctx, {
-      store,
-      loginLimiter: new RateLimiter(10, 30_000),
-    })
+  // Register routes IMMEDIATELY, then load persisted state asynchronously.
+  // Before load() settles the store is empty → fail-closed (403 not_configured),
+  // so there is no "unauthenticated window" during startup. A load failure is
+  // logged (EACCES etc.) — the gate stays closed rather than opening.
+  registerLanWebRoutes(ctx, {
+    store,
+    loginLimiter: new RateLimiter(10, 30_000),
+    getSessionDays: () => config.sessionDays,
   })
+  store
+    .load()
+    .then(() => store.installExitFlush())
+    .catch((error) => {
+      console.error('[dsh-lan-web] failed to load session store, gate stays closed:', error)
+    })
 
   // TODO(M4): HTTPS config fields; api/gate adapter slot for future DSH versions.
 }

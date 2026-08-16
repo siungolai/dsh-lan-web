@@ -12,6 +12,7 @@
  * - Writes are debounced (500 ms) to batch bursts; flush() forces a write.
  * - Clock/randomness are injectable for tests.
  */
+import { mkdirSync, renameSync, writeFileSync } from 'node:fs'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { randomToken } from './crypto.ts'
@@ -58,10 +59,27 @@ export class LanWebStore {
     this.data = { passwordHash: '', epoch: 0, sessions: {} }
   }
 
-  /** Load persisted data (missing/corrupt file → empty state). */
+  /**
+   * Load persisted data. A missing file (first run) is a normal empty state;
+   * a CORRUPT file degrades to the empty state but logs a warning (the
+   * password is effectively lost — fail-closed is safer than a half state).
+   * Any other read error (e.g. EACCES: file exists but unreadable) is
+   * rethrown so the operator notices instead of silently resetting the
+   * password to "not configured".
+   */
   async load(): Promise<void> {
+    let raw: string
     try {
-      const raw = await readFile(this.filePath, 'utf8')
+      raw = await readFile(this.filePath, 'utf8')
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code === 'ENOENT') {
+        this.data = { passwordHash: '', epoch: 0, sessions: {} }
+        return
+      }
+      throw error
+    }
+    try {
       const parsed = JSON.parse(raw) as { passwordHash?: string; epoch?: number; sessions?: Record<string, SessionRecord> }
       this.data = {
         passwordHash: typeof parsed.passwordHash === 'string' ? parsed.passwordHash : '',
@@ -69,6 +87,7 @@ export class LanWebStore {
         sessions: parsed.sessions && typeof parsed.sessions === 'object' ? parsed.sessions : {},
       }
     } catch {
+      console.error('[dsh-lan-web] session data file corrupt, starting empty (fail-closed):', this.filePath)
       this.data = { passwordHash: '', epoch: 0, sessions: {} }
     }
   }
@@ -167,13 +186,33 @@ export class LanWebStore {
     if (this.flushTimer !== null) return
     this.flushTimer = setTimeout(() => {
       this.flushTimer = null
-      void this.flush()
+      this.flush().catch((error) => {
+        console.error('[dsh-lan-web] session flush failed:', error)
+      })
     }, FLUSH_DEBOUNCE_MS)
     this.flushTimer.unref?.()
   }
 
-  /** Atomic write (tmp + rename), mode 0600. */
-  async flush(): Promise<void> {
+  /**
+   * Atomic write (tmp + rename), mode 0600. Writes are serialized on a
+   * promise chain: concurrent flush() calls (debounce timer + explicit
+   * awaits) would otherwise race on the same .tmp path — the second
+   * rename() fails with ENOENT and the unhandled rejection crashes the
+   * process (Node >= 15).
+   */
+  private flushChain: Promise<void> = Promise.resolve()
+
+  flush(): Promise<void> {
+    this.flushChain = this.flushChain
+      .catch(() => {
+        // A failed chain link must not poison the next flush; the caller's
+        // own rejection still propagates from the link it awaited.
+      })
+      .then(() => this.writeNow())
+    return this.flushChain
+  }
+
+  private async writeNow(): Promise<void> {
     if (this.flushTimer !== null) {
       clearTimeout(this.flushTimer)
       this.flushTimer = null
@@ -182,5 +221,34 @@ export class LanWebStore {
     const tmp = `${this.filePath}.tmp`
     await writeFile(tmp, JSON.stringify(this.data, null, 2), { mode: 0o600 })
     await rename(tmp, this.filePath)
+  }
+
+  /**
+   * Synchronous last-resort write for process exit paths ('exit' event,
+   * SIGTERM/SIGINT handlers), where async I/O can no longer complete.
+   * Idempotent with flush() (same .tmp path, serialized by the event-loop
+   * pause at exit).
+   */
+  flushSync(): void {
+    if (this.flushTimer !== null) {
+      clearTimeout(this.flushTimer)
+      this.flushTimer = null
+    }
+    try {
+      mkdirSync(dirname(this.filePath), { recursive: true })
+      const tmp = `${this.filePath}.tmp`
+      writeFileSync(tmp, JSON.stringify(this.data, null, 2), { mode: 0o600 })
+      renameSync(tmp, this.filePath)
+    } catch {
+      // Last resort only: nothing recoverable at exit time.
+    }
+  }
+
+  /** Register exit-time flush hooks ('exit', SIGTERM, SIGINT). */
+  installExitFlush(): void {
+    const flush = () => this.flushSync()
+    process.on('exit', flush)
+    process.on('SIGTERM', flush)
+    process.on('SIGINT', flush)
   }
 }

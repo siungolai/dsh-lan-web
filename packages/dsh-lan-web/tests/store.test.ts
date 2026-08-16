@@ -149,4 +149,42 @@ describe('persistence', () => {
     expect(fresh.hasPassword()).toBe(false)
     expect(fresh.sessionCount()).toBe(0)
   })
+
+  it('rethrows on EACCES instead of silently resetting (password loss would lock the gate)', async () => {
+    const { chmod, writeFile } = await import('node:fs/promises')
+    await store.issue()
+    await store.flush()
+    await chmod(file, 0o000)
+    const fresh = new LanWebStore({ filePath: file, randomToken: () => 'tok-x' })
+    await expect(fresh.load()).rejects.toThrow()
+    await chmod(file, 0o600)
+  })
+
+  it('concurrent flush() calls never race (serialized chain, no ENOENT)', async () => {
+    for (let i = 0; i < 10; i += 1) store.issue(`ua-${i}`)
+    // Fire several flushes at once (debounce timer may also be pending).
+    await Promise.all([store.flush(), store.flush(), store.flush()])
+    const { readFile } = await import('node:fs/promises')
+    const raw = JSON.parse(await readFile(file, 'utf8'))
+    expect(Object.keys(raw.sessions).length).toBe(10)
+  })
+
+  it('flushSync writes the current state synchronously (exit-time path)', async () => {
+    const token = store.issue('ua-exit')
+    store.flushSync()
+    // Same injected clock as the issuing store, or the sliding window sees
+    // a multi-year gap and expires the session.
+    const fresh = new LanWebStore({ filePath: file, now: () => now, randomToken: () => 'tok-x' })
+    await fresh.load()
+    expect(fresh.validate(token)).not.toBeNull()
+  })
+
+  it('flushes on the process exit event via installExitFlush', async () => {
+    const token = store.issue('ua-exit2')
+    store.installExitFlush()
+    process.emit('exit', 0)
+    const fresh = new LanWebStore({ filePath: file, now: () => now, randomToken: () => 'tok-x' })
+    await fresh.load()
+    expect(fresh.validate(token)).not.toBeNull()
+  })
 })

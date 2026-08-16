@@ -35,15 +35,26 @@ export function apply(ctx: ClientContext) {
       /* network error: leave the GUI as-is; next probe will decide */
     })
 
-  // Watch every API response: an unexpected 401 (kicked / expired / password
-  // changed) brings the gate back immediately. The login POST itself is
-  // excluded — its 401 is the gate's own error path.
+  // Watch API responses: an unexpected 401 on OUR gate endpoints (kicked /
+  // expired / password changed) brings the gate back immediately. Scoped to
+  // /api/lan-web/* — other endpoints can legitimately return 401 without
+  // meaning "session dead", and popping the gate there would be wrong. The
+  // login POST's 401 is the form's own error path and status probes already
+  // decide on their own 401. showLoginGate() is idempotent (no-op when the
+  // gate is already mounted), which dedupes concurrent 401s.
   const originalFetch = window.fetch.bind(window)
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const res = await originalFetch(input, init)
     if (res.status === 401) {
-      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input instanceof Request ? input.url : String(input)
-      if (!url.includes(LOGIN_URL) && !url.includes(STATUS_URL)) showLoginGate()
+      const url = toUrl(input)
+      if (
+        url !== null &&
+        url.pathname.startsWith('/api/lan-web/') &&
+        url.pathname !== LOGIN_URL &&
+        url.pathname !== STATUS_URL
+      ) {
+        showLoginGate()
+      }
     }
     return res
   }
@@ -80,6 +91,27 @@ export function apply(ctx: ClientContext) {
     })
   }, 60_000)
   ctx.effect(() => () => window.clearInterval(timer))
+}
+
+/**
+ * Normalize a fetch input to a URL resolved against the page origin.
+ * Returns null for inputs that cannot be interpreted as a URL (the caller
+ * then simply does not treat the response as a gate signal).
+ */
+function toUrl(input: RequestInfo | URL): URL | null {
+  try {
+    const raw =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input instanceof Request
+            ? input.url
+            : String(input)
+    return new URL(raw, window.location.origin)
+  } catch {
+    return null
+  }
 }
 
 export { hideLoginGate, showLoginGate }

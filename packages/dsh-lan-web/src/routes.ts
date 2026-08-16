@@ -22,7 +22,6 @@ import type { RateLimiter } from './rate-limit.ts'
 import { hashPassword, verifyPassword } from './crypto.ts'
 
 export const COOKIE_NAME = 'dsh_lan_web_session'
-const COOKIE_MAX_AGE_SEC = 30 * 24 * 3600
 const BODY_LIMIT_BYTES = 4096
 const MIN_PASSWORD_LENGTH = 4
 const MAX_PASSWORD_LENGTH = 128
@@ -30,6 +29,8 @@ const MAX_PASSWORD_LENGTH = 128
 export interface LanWebDeps {
   store: LanWebStore
   loginLimiter: RateLimiter
+  /** Sliding session lifetime in days (from settings); drives cookie Max-Age. */
+  getSessionDays: () => number
 }
 
 export function registerLanWebRoutes(ctx: Context, deps: LanWebDeps): void {
@@ -70,13 +71,21 @@ async function handle(req: IncomingMessage, res: ServerResponse, deps: LanWebDep
     }
     writeJson(res, 404, { error: 'not_found' })
   } catch (err) {
+    if (err instanceof Error && err.message === 'body_too_large') {
+      writeJson(res, 413, { error: 'body_too_large' })
+      return
+    }
+    if (err instanceof Error && err.message === 'invalid_json') {
+      writeJson(res, 400, { error: 'bad_request' })
+      return
+    }
     writeJson(res, 500, { error: 'internal', detail: err instanceof Error ? err.message : String(err) })
   }
 }
 
 /* ----------------------------- helpers ----------------------------- */
 
-function isLoopback(req: IncomingMessage): boolean {
+export function isLoopback(req: IncomingMessage): boolean {
   const address = req.socket.remoteAddress ?? ''
   const loopbackAddress =
     address === '::1' ||
@@ -128,16 +137,23 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
     let size = 0
+    let tooLarge = false
     req.on('data', (chunk: Buffer) => {
       size += chunk.length
       if (size > BODY_LIMIT_BYTES) {
-        reject(new Error('body_too_large'))
-        req.destroy()
+        if (!tooLarge) {
+          tooLarge = true
+          // Reject early, but keep DRAINING the request stream instead of
+          // req.destroy(): destroying the socket kills the connection before
+          // the 413 response can be delivered (client sees a reset, not 413).
+          reject(Object.assign(new Error('body_too_large'), { status: 413 }))
+        }
         return
       }
       chunks.push(chunk)
     })
     req.on('end', () => {
+      if (tooLarge) return
       try {
         resolve(chunks.length === 0 ? undefined : JSON.parse(Buffer.concat(chunks).toString('utf8')))
       } catch {
@@ -167,7 +183,7 @@ function requireSession(req: IncomingMessage, res: ServerResponse, deps: LanWebD
     return null
   }
   // Sliding renewal: re-issue the cookie with a fresh lifetime.
-  setSessionCookie(res, token, COOKIE_MAX_AGE_SEC)
+  setSessionCookie(res, token, deps.getSessionDays() * 86_400)
   return record
 }
 
@@ -183,20 +199,14 @@ async function login(req: IncomingMessage, res: ServerResponse, deps: LanWebDeps
     writeJson(res, 403, { error: 'not_configured' })
     return
   }
-  let body: unknown
-  try {
-    body = await readJsonBody(req)
-  } catch {
-    writeJson(res, 400, { error: 'bad_request' })
-    return
-  }
+  const body = await readJsonBody(req)
   const password = (body as { password?: unknown } | undefined)?.password
   if (typeof password !== 'string' || !(await verifyPassword(password, deps.store.passwordHash))) {
     writeJson(res, 401, { error: 'invalid_credentials' })
     return
   }
   const token = deps.store.issue(req.headers['user-agent'])
-  setSessionCookie(res, token, COOKIE_MAX_AGE_SEC)
+  setSessionCookie(res, token, deps.getSessionDays() * 86_400)
   writeJson(res, 200, { ok: true })
 }
 
@@ -216,13 +226,7 @@ function status(req: IncomingMessage, res: ServerResponse, deps: LanWebDeps): vo
 }
 
 async function changePassword(req: IncomingMessage, res: ServerResponse, deps: LanWebDeps): Promise<void> {
-  let body: unknown
-  try {
-    body = await readJsonBody(req)
-  } catch {
-    writeJson(res, 400, { error: 'bad_request' })
-    return
-  }
+  const body = await readJsonBody(req)
   const { current, next } = (body ?? {}) as { current?: unknown; next?: unknown }
   if (typeof next !== 'string' || next.length < MIN_PASSWORD_LENGTH || next.length > MAX_PASSWORD_LENGTH) {
     writeJson(res, 400, { error: 'invalid_password_length' })
@@ -262,13 +266,7 @@ function devices(req: IncomingMessage, res: ServerResponse, deps: LanWebDeps): v
 
 async function revokeDevice(req: IncomingMessage, res: ServerResponse, deps: LanWebDeps): Promise<void> {
   if (requireSession(req, res, deps) === null) return
-  let body: unknown
-  try {
-    body = await readJsonBody(req)
-  } catch {
-    writeJson(res, 400, { error: 'bad_request' })
-    return
-  }
+  const body = await readJsonBody(req)
   const deviceId = (body as { deviceId?: unknown } | undefined)?.deviceId
   if (typeof deviceId !== 'string' || deviceId.length === 0) {
     writeJson(res, 400, { error: 'bad_request' })

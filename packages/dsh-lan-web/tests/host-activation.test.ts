@@ -14,6 +14,7 @@ import * as hostPlugin from '../src/index.ts'
 /** Minimal webServer stand-in (tapIndex/register contract only). */
 class WebServerMock extends Service {
   taps: Array<(html: string) => string> = []
+  routes: Array<{ kind?: string; path?: string }> = []
 
   constructor(ctx: Context) {
     super(ctx, 'webServer')
@@ -24,7 +25,8 @@ class WebServerMock extends Service {
     return () => {}
   }
 
-  register(): () => void {
+  register(route: { kind?: string; path?: string; handler: unknown }): () => void {
+    this.routes.push(route)
     return () => {}
   }
 }
@@ -57,11 +59,15 @@ describe('host half activation', () => {
     expect(out).toContain('</head>')
   })
 
-  it('store data file lands under DSH_HOME after apply (async load)', async () => {
+  it('registers the /api/lan-web prefix route while the async store load settles', async () => {
     const ctx = new Context()
     ctx.plugin(WebServerMock)
     ctx.plugin(hostPlugin as never)
-    // Let the async store.load().then(registerRoutes) settle.
+    // The async store.load() under the isolated DSH_HOME must settle without
+    // an unhandled rejection; route registration is immediate so the gate is
+    // fail-closed before load() completes (empty store refuses LAN access).
     await new Promise((resolve) => setTimeout(resolve, 50))
+    const web = ctx.get('webServer', false) as unknown as WebServerMock | undefined
+    expect(web?.routes.some((r) => r.path === '/api/lan-web' && r.kind === 'prefix')).toBe(true)
   })
 })

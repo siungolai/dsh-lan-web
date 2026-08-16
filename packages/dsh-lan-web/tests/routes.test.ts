@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { LanWebStore } from '../src/store.ts'
 import { RateLimiter } from '../src/rate-limit.ts'
-import { registerLanWebRoutes } from '../src/routes.ts'
+import { isLoopback, registerLanWebRoutes } from '../src/routes.ts'
 
 class WebServerMock extends Service {
   handler: ((req: IncomingMessage, res: ServerResponse) => void | Promise<void>) | undefined
@@ -43,7 +43,7 @@ async function setupStore(initialHash = ''): Promise<TestEnv> {
   const store = new LanWebStore({ filePath })
   if (initialHash !== '') await store.setPasswordHash(initialHash)
   await store.load()
-  registerLanWebRoutes(ctx, { store, loginLimiter: new RateLimiter(10, 30_000) })
+  registerLanWebRoutes(ctx, { store, loginLimiter: new RateLimiter(10, 30_000), getSessionDays: () => 30 })
   const web = ctx.get('webServer', false) as unknown as WebServerMock | undefined
   if (web?.handler === undefined) throw new Error('route handler not registered')
   const server = http.createServer((req, res) => void web.handler!(req, res))
@@ -150,6 +150,8 @@ describe('login', () => {
       expect(res.status).toBe(200)
       expect(res.setCookie.some((c) => c.startsWith('dsh_lan_web_session='))).toBe(true)
       expect(res.setCookie.some((c) => c.includes('HttpOnly') && c.includes('SameSite=Lax'))).toBe(true)
+      // Issue-time lifetime: sessionDays (30 in test env) * 86400 seconds.
+      expect(res.setCookie.some((c) => c.includes('Max-Age=2592000'))).toBe(true)
     } finally {
       await e.close()
     }
@@ -177,6 +179,30 @@ describe('login', () => {
     } finally {
       await e.close()
     }
+  })
+
+  it('rejects oversized bodies with 413 (not a generic 400)', async () => {
+    const e = await withPassword('secret1')
+    try {
+      const res = await call(e.base, 'POST', '/api/lan-web/login', { body: { password: 'x'.repeat(5000) }, lanHost: true })
+      expect(res.status).toBe(413)
+      expect((res.body as { error?: string }).error).toBe('body_too_large')
+    } finally {
+      await e.close()
+    }
+  })
+})
+
+describe('unknown paths under the prefix', () => {
+  it('returns 404 for an unknown pathname', async () => {
+    const res = await call(env.base, 'GET', '/api/lan-web/nope')
+    expect(res.status).toBe(404)
+    expect((res.body as { error?: string }).error).toBe('not_found')
+  })
+
+  it('returns 404 for a known path with the wrong method', async () => {
+    const res = await call(env.base, 'GET', '/api/lan-web/login')
+    expect(res.status).toBe(404)
   })
 })
 
@@ -213,6 +239,46 @@ describe('session gate', () => {
     } finally {
       await e.close()
     }
+  })
+
+  it('sliding renewal re-issues the cookie with a fresh Max-Age', async () => {
+    const e = await withPassword('secret1')
+    try {
+      const login = await call(e.base, 'POST', '/api/lan-web/login', { body: { password: 'secret1' }, lanHost: true })
+      const cookie = login.setCookie[0]!.split(';')[0]!
+      // Every authenticated request re-issues Set-Cookie with the full
+      // sessionDays lifetime (30 days here), not a shrinking one.
+      const renewed = await call(e.base, 'GET', '/api/lan-web/devices', { lanHost: true, cookie })
+      expect(renewed.status).toBe(200)
+      expect(renewed.setCookie.some((c) => c.includes('Max-Age=2592000'))).toBe(true)
+    } finally {
+      await e.close()
+    }
+  })
+})
+
+describe('isLoopback', () => {
+  it('recognizes IPv6 loopback (::1 address + [::1] host)', () => {
+    const req = {
+      socket: { remoteAddress: '::1' },
+      headers: { host: '[::1]:3080' },
+    } as unknown as IncomingMessage
+    expect(isLoopback(req)).toBe(true)
+  })
+
+  it('requires BOTH a loopback address and a loopback host (spoof guard)', () => {
+    // LAN address + loopback-looking Host header: not loopback.
+    const lanAddr = {
+      socket: { remoteAddress: '192.0.2.7' },
+      headers: { host: '127.0.0.1:3080' },
+    } as unknown as IncomingMessage
+    expect(isLoopback(lanAddr)).toBe(false)
+    // IPv4-mapped loopback address + LAN Host header: not loopback.
+    const mapped = {
+      socket: { remoteAddress: '::ffff:127.0.0.1' },
+      headers: { host: '192.0.2.7:3080' },
+    } as unknown as IncomingMessage
+    expect(isLoopback(mapped)).toBe(false)
   })
 })
 

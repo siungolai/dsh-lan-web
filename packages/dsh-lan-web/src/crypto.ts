@@ -26,12 +26,23 @@ export async function hashPassword(password: string, saltHex?: string): Promise<
 }
 
 /** Constant-time verification of a password against a stored hash. */
+const HEX_RE = /^[0-9a-f]+$/i
+const SALT_HEX_LENGTH = SALT_BYTES * 2 // 32 hex chars = 16 bytes
+const KEY_HEX_LENGTH = KEY_BYTES * 2 // 128 hex chars = 64 bytes
+
 export async function verifyPassword(password: string, stored: string): Promise<boolean> {
+  // Reject empty passwords outright.
+  if (typeof password !== 'string' || password.length === 0) return false
   const separator = stored.indexOf(':')
   if (separator <= 0) return false
   const saltHex = stored.slice(0, separator)
   const hashHex = stored.slice(separator + 1)
-  if (saltHex.length === 0 || hashHex.length === 0) return false
+  // Strict shape: exact fixed lengths + valid hex. Without this,
+  // Buffer.from('zz', 'hex') yields an EMPTY buffer, scrypt keylen 0
+  // succeeds, and timingSafeEqual(empty, empty) is true — a stored value
+  // like 'salt:zz' would accept ANY password (auth bypass).
+  if (saltHex.length !== SALT_HEX_LENGTH || hashHex.length !== KEY_HEX_LENGTH) return false
+  if (!HEX_RE.test(saltHex) || !HEX_RE.test(hashHex)) return false
   const salt = Buffer.from(saltHex, 'hex')
   const expected = Buffer.from(hashHex, 'hex')
   const actual = await scrypt(password, salt, expected.length)

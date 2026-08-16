@@ -30,6 +30,27 @@ describe('password hashing', () => {
     await expect(verifyPassword('x', ':hashonly')).resolves.toBe(false)
     await expect(verifyPassword('x', 'salt:')).resolves.toBe(false)
   })
+
+  it('rejects non-hex stored values (auth-bypass regression: Buffer.from("zz","hex") is empty)', async () => {
+    const good = await hashPassword('secret')
+    const [salt] = good.split(':')
+    // 128-char 'z' hash: valid length, invalid hex
+    await expect(verifyPassword('anything', `${salt}:${'z'.repeat(128)}`)).resolves.toBe(false)
+    // 32-char 'z' salt: valid length, invalid hex
+    await expect(verifyPassword('anything', `${'z'.repeat(32)}:${'0'.repeat(128)}`)).resolves.toBe(false)
+    // correct-length garbage hex
+    await expect(verifyPassword('anything', `${'0'.repeat(32)}:${'1'.repeat(128)}`)).resolves.toBe(false)
+  })
+
+  it('rejects wrong-length stored values', async () => {
+    await expect(verifyPassword('x', `${'0'.repeat(31)}:${'1'.repeat(128)}`)).resolves.toBe(false)
+    await expect(verifyPassword('x', `${'0'.repeat(32)}:${'1'.repeat(127)}`)).resolves.toBe(false)
+  })
+
+  it('rejects empty passwords', async () => {
+    const good = await hashPassword('secret')
+    await expect(verifyPassword('', good)).resolves.toBe(false)
+  })
 })
 
 describe('randomToken', () => {

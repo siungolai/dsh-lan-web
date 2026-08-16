@@ -40,4 +40,20 @@ describe('RateLimiter', () => {
     limiter.reset('ip')
     expect(limiter.allow('ip')).toBe(true)
   })
+
+  it('sweeps expired entries so memory stays bounded', () => {
+    let now = 0
+    const limiter = new RateLimiter(3, 30_000, () => now)
+    for (let i = 0; i < 100; i += 1) limiter.allow(`ip-${i}`)
+    expect(limiter.size()).toBe(100)
+    // Once the window elapses, the next hit triggers a lazy sweep: every
+    // expired key is dropped, so distinct-IP floods cannot grow the map.
+    now = 30_001
+    limiter.allow('ip-fresh')
+    expect(limiter.size()).toBe(1)
+    // Active keys inside a live window are preserved.
+    limiter.allow('ip-fresh')
+    expect(limiter.allow('ip-fresh')).toBe(true)
+    expect(limiter.size()).toBe(1)
+  })
 })
