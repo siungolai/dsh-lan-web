@@ -21,6 +21,7 @@ A DSH plugin that exposes the DSH Web GUI to your home/office LAN with password-
 | Persistent sessions / 会话持久化 | 30-day remember-me, multi-device, change-password-kicks-all, survives restarts. 30 天免登录、多设备并行、改密码全踢、重启不丢 |
 | Device management / 设备管理 | View & revoke logged-in devices from the settings card. 设置页查看/踢出已登录设备 |
 | Mobile friendly / 手机友好 | Responsive layout, touch-friendly targets. 响应式布局、触摸友好 |
+| **Mobile surface / 移动面** | Standalone phone UI at `/lan` — chat core loop, `/` skill menu, tool/reasoning/approval cards; phones hitting the main address auto-redirect (desktop untouched). 手机专用移动面 `/lan`：核心聊天闭环、`/` 技能菜单、工具/思考/审批卡片；手机访问主地址自动跳转（桌面不受影响） |
 | HTTPS-ready / 预留 HTTPS | Config schema reserves HTTPS fields (not yet implemented). 配置位预留 HTTPS（未实现） |
 
 ## Install / 安装
@@ -74,6 +75,18 @@ dsh-lan-web:
 - DSH 传输层信任围栏（loopback/trustedHosts 校验）仍生效，未知 Host 一律 403。
 - 未设置密码时 LAN 访问默认拒绝（fail-closed）。
 - 改密码会立即使所有已登录设备失效。
+
+## Mobile Surface / 移动面
+
+Mobile devices get a dedicated surface: `http://<LAN-IP>:3080/lan` — a self-contained page (loads **no** desktop UI plugins) with:
+
+- **核心闭环**：会话列表（标题+时间倒序）、历史（分页 50 条+加载更多）、流式回复、新建会话
+- **`/` 技能菜单**：与桌面一致——输入 `/` 弹出技能列表（`/name` + 描述，非模型可调用标「仅用户 ·」），选中插入 `/<skill-name> ` 后回车发送，宿主钩子注入 skill 内容
+- **动作卡片**：🧠 思考（折叠）、🔧 工具调用、工具结果、⏳ 等待审批、❓ 等待回答、📋 任务清单——与桌面视觉可对应
+- **自动跳转**：手机 UA 访问主地址 `/` 时在插件加载前同步跳转 `/lan`（桌面 UA 不受影响；`?desktop=1` 或 `dsh_lan_web_ui=desktop` cookie 可退出，移动面内「桌面版 ›」链接设置之）
+- **登录**：与桌面共用同一登录门（路由级 + 客户端兜底；loopback 豁免）
+
+手机访问 `http://<LAN-IP>:3080/lan` 即可使用；或直接访问主地址由 UA 检测自动跳转。
 
 ## Development / 开发
 
