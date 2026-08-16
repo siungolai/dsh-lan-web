@@ -18,6 +18,7 @@ import { LanWebStore } from './store.ts'
 import { RateLimiter } from './rate-limit.ts'
 import { registerLanWebRoutes } from './routes.ts'
 import { registerMobileRoutes } from './mobile-routes.ts'
+import { registerMobileProxy } from './mobile-proxy.ts'
 import { POLYFILL_SCRIPT } from './crypto.ts'
 
 export const name = 'dsh-lan-web'
@@ -88,6 +89,9 @@ export function apply(ctx: Context) {
   })
   // M5: /lan mobile surface (app shell gated by the same login gate).
   registerMobileRoutes(ctx, store)
+  // 0.3.0: mobile data-plane proxy — /api/lan-web/m/* + events bridge behind
+  // the login gate (upgrade B). Disabled gracefully when apiProxy is absent.
+  registerMobileProxy(ctx, store)
   store
     .load()
     .then(() => store.installExitFlush())

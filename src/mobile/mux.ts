@@ -98,7 +98,7 @@ export class MuxClient {
     document.addEventListener('visibilitychange', onVisibility)
     this.visibilityHandler = onVisibility
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const ws = new WebSocket(`${protocol}//${window.location.host}/api/events.mux`)
+    const ws = new WebSocket(`${protocol}//${window.location.host}/api/lan-web/m/events`)
     this.ws = ws
     ws.onmessage = (event: MessageEvent<string>) => {
       let envelope: MuxEnvelope

@@ -34,7 +34,7 @@ describe('rpc envelope', () => {
       return respondOk(String(init.body), { items: [] })
     })
     const value = await rpc<{ items: unknown[] }>('session.list', {})
-    expect(seen?.url).toBe('/api/session.list')
+    expect(seen?.url).toBe('/api/lan-web/m/session.list')
     const body = seen?.body as { type: string; method: string; payload: unknown; rpcId: string }
     expect(body.type).toBe('client-request')
     expect(body.method).toBe('session.list')

@@ -29,7 +29,7 @@ export async function rpc<T>(method: string, payload?: unknown): Promise<T> {
   const rpcId = nextRpcId()
   let res: Response
   try {
-    res = await fetch(`/api/${method}`, {
+    res = await fetch(`/api/lan-web/m/${method}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ type: 'client-request', rpcId, method, payload }),

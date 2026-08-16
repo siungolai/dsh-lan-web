@@ -16,6 +16,8 @@ const base = clientBundle('dsh-lan-web', ['src/index.ts'], {
   libExternal: [
     '@deepseek-ai/dsh-host-webserver',
     '@deepseek-ai/dsh-settings',
+    '@deepseek-ai/dsh-host-apiproxy',
+    'ws',
   ],
 })
 
