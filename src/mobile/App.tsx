@@ -19,16 +19,21 @@ import {
   type SessionSummary,
   type SkillSummary,
 } from './api'
-import { MuxClient, type MuxFrame } from './mux'
+import { MuxClient, type MuxEventFrame, type MuxFrame } from './mux'
 import { useViewport } from './useViewport'
 import { SkillMenu, detectSkillGesture, filterSkills, replaceGesture } from './skill-menu'
 
+export type MessageKind = 'text' | 'reasoning' | 'tool-call' | 'tool-result'
+
 export interface Message {
   key: string
+  kind: MessageKind
   role: 'user' | 'assistant'
   text: string
   done: boolean
   seq: number
+  /** Host-computed view card type ('terminal', …) for tool messages. */
+  card?: string
 }
 
 const HISTORY_PAGE = 50
@@ -56,18 +61,97 @@ export function messageText(event: SessionEvent): string {
   return textOfBlocks(data.message?.content ?? data.content)
 }
 
-function deriveMessages(entries: HistoryEntry[]): Message[] {
+/** Tool card icon by host card type / tool name (desktop-like visual cues). */
+const TOOL_ICONS: Record<string, string> = {
+  terminal: '>_',
+  bash: '>_',
+  read: '📖',
+  write: '✏️',
+  think: '🧠',
+  web_search: '🔍',
+  glob: '🗂️',
+  grep: '🔎',
+  edit: '🖊️',
+}
+
+function toolIcon(card: string | undefined, name: string | undefined): string {
+  return TOOL_ICONS[(card ?? name ?? '').toLowerCase()] ?? '🔧'
+}
+
+function summarizeToolCall(data: { name?: unknown; arguments?: unknown }, view: unknown): string {
+  const title = (view as { view?: { title?: unknown } } | undefined)?.view?.title
+  if (typeof title === 'string' && title.length > 0) return title.length > 80 ? `${title.slice(0, 80)}…` : title
+  const name = typeof data.name === 'string' ? data.name : 'tool'
+  const args = typeof data.arguments === 'string' ? data.arguments : ''
+  return args.length > 80 ? `${name} ${args.slice(0, 80)}…` : `${name} ${args}`.trim()
+}
+
+function summarizeToolResult(view: unknown): string {
+  const output = (view as { view?: { output?: unknown } } | undefined)?.view?.output
+  if (typeof output === 'string' && output.length > 0) return output.length > 120 ? `${output.slice(0, 120)}…` : output
+  return '（无输出）'
+}
+
+/** Key of the reasoning block for a turn. */
+const reasoningKey = (turn: number): string => `r-${turn}`
+
+export function deriveMessages(entries: HistoryEntry[]): Message[] {
   const out: Message[] = []
-  for (const { event } of entries) {
+  const reasoning = new Map<number, { text: string; seq: number }>()
+
+  const flushReasoning = (turn: number): void => {
+    const r = reasoning.get(turn)
+    if (r !== undefined && r.text.length > 0) {
+      out.push({ key: reasoningKey(turn), kind: 'reasoning', role: 'assistant', text: r.text, done: true, seq: r.seq })
+      reasoning.delete(turn)
+    }
+  }
+
+  for (const { event, view } of entries) {
+    const data = (event.data ?? {}) as { turn?: number; chunk?: { type?: string; text?: string }; name?: string; arguments?: string }
     if (event.type === 'user/message' || event.type === 'assistant/message') {
+      if (event.type === 'assistant/message') flushReasoning(data.turn ?? 0)
       out.push({
         key: `${event.type === 'user/message' ? 'u' : 'a'}-${event.seq}`,
+        kind: 'text',
         role: event.type === 'user/message' ? 'user' : 'assistant',
         text: messageText(event),
         done: true,
         seq: event.seq,
       })
+    } else if (event.type === 'tool/call') {
+      out.push({
+        key: `tc-${event.seq}`,
+        kind: 'tool-call',
+        role: 'assistant',
+        text: summarizeToolCall(data, view),
+        done: true,
+        seq: event.seq,
+        card: (view as { view?: { card?: string } } | undefined)?.view?.card,
+      })
+    } else if (event.type === 'tool/result') {
+      out.push({
+        key: `tr-${event.seq}`,
+        kind: 'tool-result',
+        role: 'assistant',
+        text: summarizeToolResult(view),
+        done: true,
+        seq: event.seq,
+        card: (view as { view?: { card?: string } } | undefined)?.view?.card,
+      })
+    } else if (event.type === 'assistant/chunk' && data.chunk?.type === 'reasoning-delta' && typeof data.chunk.text === 'string') {
+      const turn = data.turn ?? 0
+      const cur = reasoning.get(turn) ?? { text: '', seq: event.seq }
+      cur.text += data.chunk.text
+      reasoning.set(turn, cur)
+    } else if (event.type === 'assistant/chunk' && data.chunk?.type === 'text-delta') {
+      flushReasoning(data.turn ?? 0)
+    } else if (event.type === 'turn/end') {
+      flushReasoning(data.turn ?? 0)
     }
+  }
+  for (const [turn, r] of reasoning) {
+    if (r.text.length > 0) out.push({ key: reasoningKey(turn), kind: 'reasoning', role: 'assistant', text: r.text, done: true, seq: r.seq })
   }
   return out
 }
@@ -110,6 +194,7 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
   const [loadingHistory, setLoadingHistory] = useState(false)
   const [creating, setCreating] = useState(false)
   const [scrolledUp, setScrolledUp] = useState(false)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
   const viewport = useViewport()
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -250,7 +335,8 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
     const client = new MuxClient({
       onFrame: (frame: MuxFrame) => {
         if (frame.type === 'session/event' && 'sessionId' in frame && 'event' in frame) {
-          applyEvent(frame as { sessionId: string; event: SessionEvent })
+          const f = frame as MuxEventFrame
+          applyEvent(f)
         }
       },
       onResync: () => {
@@ -265,7 +351,7 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
   }, [resyncConversation])
 
   const applyEvent = useCallback(
-    (frame: { sessionId: string; event: SessionEvent }): void => {
+    (frame: MuxEventFrame): void => {
       const { event } = frame
       const v = viewRef.current
       if (v.kind !== 'conv' || frame.sessionId !== v.sessionId) {
@@ -277,13 +363,29 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
       if (event.seq <= appliedSeqRef.current) return
       appliedSeqRef.current = event.seq
       scheduleListRefresh()
-      const data = (event.data ?? {}) as { content?: unknown; turn?: number; chunk?: { type?: string; text?: string; index?: number } }
+      const data = (event.data ?? {}) as { content?: unknown; turn?: number; chunk?: { type?: string; text?: string; index?: number }; name?: string; arguments?: string }
+
+      const flushReasoning = (turn: number): void => {
+        setMessages((prev) => prev.map((m) => (m.key === reasoningKey(turn) && m.kind === 'reasoning' ? { ...m, done: true } : m)))
+      }
 
       if (event.type === 'user/message') {
-        setMessages((prev) => [...prev, { key: `u-${event.seq}`, role: 'user', text: messageText(event), done: true, seq: event.seq }])
+        setMessages((prev) => [...prev, { key: `u-${event.seq}`, kind: 'text', role: 'user', text: messageText(event), done: true, seq: event.seq }])
         scrollToBottomSoon()
       } else if (event.type === 'assistant/chunk') {
-        if (data.chunk?.type === 'text-delta' && typeof data.chunk.text === 'string') {
+        if (data.chunk?.type === 'reasoning-delta' && typeof data.chunk.text === 'string') {
+          const turn = data.turn ?? 0
+          const key = reasoningKey(turn)
+          setMessages((prev) => {
+            const existing = prev.find((m) => m.key === key && m.kind === 'reasoning')
+            if (existing !== undefined) {
+              return prev.map((m) => (m.key === key ? { ...m, text: m.text + data.chunk!.text! } : m))
+            }
+            return [...prev, { key, kind: 'reasoning', role: 'assistant', text: data.chunk!.text!, done: false, seq: event.seq }]
+          })
+          scrollToBottomSoon()
+        } else if (data.chunk?.type === 'text-delta' && typeof data.chunk.text === 'string') {
+          flushReasoning(data.turn ?? 0)
           const turn = data.turn ?? 0
           const key = `turn-${turn}`
           setMessages((prev) => {
@@ -291,20 +393,54 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
             if (existing !== undefined) {
               return prev.map((m) => (m.key === key ? { ...m, text: m.text + data.chunk!.text!, done: false } : m))
             }
-            return [...prev, { key, role: 'assistant', text: data.chunk!.text!, done: false, seq: event.seq }]
+            return [...prev, { key, kind: 'text', role: 'assistant', text: data.chunk!.text!, done: false, seq: event.seq }]
           })
           scrollToBottomSoon()
         }
+      } else if (event.type === 'tool/call') {
+        const turn = data.turn ?? 0
+        flushReasoning(turn)
+        const viewBlock = frame.view as { view?: { card?: string } } | undefined
+        setMessages((prev) => [
+          ...prev,
+          {
+            key: `tc-${event.seq}`,
+            kind: 'tool-call',
+            role: 'assistant',
+            text: summarizeToolCall(data, frame.view),
+            done: true,
+            seq: event.seq,
+            card: viewBlock?.view?.card,
+          },
+        ])
+        scrollToBottomSoon()
+      } else if (event.type === 'tool/result') {
+        const viewBlock = frame.view as { view?: { card?: string } } | undefined
+        setMessages((prev) => [
+          ...prev,
+          {
+            key: `tr-${event.seq}`,
+            kind: 'tool-result',
+            role: 'assistant',
+            text: summarizeToolResult(frame.view),
+            done: true,
+            seq: event.seq,
+            card: viewBlock?.view?.card,
+          },
+        ])
+        scrollToBottomSoon()
       } else if (event.type === 'assistant/message') {
+        flushReasoning(data.turn ?? 0)
         const final = messageText(event)
         const key = `a-${event.seq}`
         setMessages((prev) => [
           ...prev.filter((m) => !(m.role === 'assistant' && !m.done && m.key.startsWith('turn-'))),
-          { key, role: 'assistant', text: final, done: true, seq: event.seq },
+          { key, kind: 'text', role: 'assistant', text: final, done: true, seq: event.seq },
         ])
         scrollToBottomSoon()
       } else if (event.type === 'turn/end') {
         const turn = data.turn ?? 0
+        flushReasoning(turn)
         setMessages((prev) => prev.map((m) => (m.key === `turn-${turn}` ? { ...m, done: true } : m)))
       } else if (event.type === 'session/title') {
         const title = (event.data as { title?: unknown })?.title
@@ -417,6 +553,15 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
     }
   }, [creating, openConversation, onSessionExpired])
 
+  const toggleExpanded = useCallback((key: string): void => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }, [])
+
   const onScroll = useCallback((): void => {
     const el = scrollRef.current
     if (el === null) return
@@ -457,6 +602,13 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
     empty: { padding: '40px 24px', textAlign: 'center', color: '#7c8494', fontSize: 14 },
     error: { margin: '8px 12px 0', padding: '8px 12px', borderRadius: 8, background: 'rgba(248,113,113,0.12)', color: '#f87171', fontSize: 13 },
     loading: { padding: 12, textAlign: 'center', color: '#7c8494', fontSize: 13 },
+    reasoningRow: { display: 'flex', flexDirection: 'column', gap: 6, maxWidth: '82%', padding: '8px 12px', borderRadius: 10, border: '1px dashed #3a4150', background: '#151920', color: '#9aa0ab', fontSize: 13, minHeight: 36 },
+    reasoningLabel: { fontWeight: 600, color: '#7c8494' },
+    reasoningText: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: '#8b93a3', fontSize: 12, lineHeight: 1.5 },
+    toolCard: { display: 'flex', alignItems: 'flex-start', gap: 8, maxWidth: '88%', padding: '8px 12px', borderRadius: 10, borderLeft: '3px solid #3b82f6', background: '#151920', color: '#c3c7cf', fontSize: 13, minHeight: 36 },
+    toolResultCard: { display: 'flex', alignItems: 'flex-start', gap: 8, maxWidth: '88%', padding: '8px 12px', borderRadius: 10, borderLeft: '3px solid #3f6b4f', background: '#141a16', color: '#9aa0ab', fontSize: 13, minHeight: 36 },
+    toolIcon: { flex: 'none', fontFamily: 'ui-monospace, Menlo, monospace', color: '#3b82f6', fontWeight: 700 },
+    toolText: { overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as const, wordBreak: 'break-all' },
   }
 
   const streaming = messages.some((m) => !m.done)
@@ -512,14 +664,38 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
           ) : messages.length === 0 ? (
             <div style={style.empty}>发送第一条消息开始对话</div>
           ) : (
-            messages.map((m) => (
-              <div key={m.key} style={m.role === 'user' ? { ...style.bubbleRow, ...style.bubbleRowUser } : style.bubbleRow}>
-                <div style={m.role === 'user' ? { ...style.bubble, ...style.bubbleUser } : style.bubble}>
-                  {m.text}
-                  {!m.done && <span style={style.cursor} />}
+            messages.map((m) => {
+              if (m.kind === 'reasoning') {
+                const open = expanded.has(m.key)
+                return (
+                  <div key={m.key} style={style.bubbleRow}>
+                    <button type="button" style={style.reasoningRow} onClick={() => toggleExpanded(m.key)}>
+                      <span style={style.reasoningLabel}>{m.done ? '🧠 思考' : '🧠 思考中…'} {open ? '▾' : '▸'}</span>
+                      {open && <span style={style.reasoningText}>{m.text}</span>}
+                    </button>
+                  </div>
+                )
+              }
+              if (m.kind === 'tool-call' || m.kind === 'tool-result') {
+                const cardStyle = m.kind === 'tool-call' ? style.toolCard : style.toolResultCard
+                return (
+                  <div key={m.key} style={style.bubbleRow}>
+                    <div style={cardStyle}>
+                      <span style={style.toolIcon}>{toolIcon(m.card, m.text)}</span>
+                      <span style={style.toolText}>{m.text}</span>
+                    </div>
+                  </div>
+                )
+              }
+              return (
+                <div key={m.key} style={m.role === 'user' ? { ...style.bubbleRow, ...style.bubbleRowUser } : style.bubbleRow}>
+                  <div style={m.role === 'user' ? { ...style.bubble, ...style.bubbleUser } : style.bubble}>
+                    {m.text}
+                    {!m.done && <span style={style.cursor} />}
+                  </div>
                 </div>
-              </div>
-            ))
+              )
+            })
           )}
         </div>
         {hasMore && !loadingHistory && (
