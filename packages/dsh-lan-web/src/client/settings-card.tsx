@@ -16,6 +16,8 @@ export function SettingsCard() {
   const [devices, setDevices] = useState<Device[]>([])
   const [current, setCurrent] = useState('')
   const [next, setNext] = useState('')
+  // null = unknown; false = no password yet (first-time setup on host)
+  const [configured, setConfigured] = useState<boolean | null>(null)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
 
@@ -33,6 +35,14 @@ export function SettingsCard() {
 
   useEffect(() => {
     void refreshDevices()
+    void fetch('/api/lan-web/status')
+      .then((res) => (res.status === 200 ? res.json() : null))
+      .then((body: { configured?: boolean } | null) => {
+        if (body !== null && typeof body.configured === 'boolean') setConfigured(body.configured)
+      })
+      .catch(() => {
+        /* status probe is advisory only */
+      })
   }, [])
 
   async function submitPassword(event: { preventDefault(): void }) {
@@ -41,13 +51,21 @@ export function SettingsCard() {
     setBusy(true)
     setMessage(null)
     try {
+      const payload = configured === false ? { next } : { current, next }
       const res = await fetch('/api/lan-web/password', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ current, next }),
+        body: JSON.stringify(payload),
       })
       if (res.status === 200) {
-        setMessage({ kind: 'ok', text: '密码已修改，所有设备（含本机）已退出，请重新登录' })
+        setMessage({
+          kind: 'ok',
+          text:
+            configured === false
+              ? '密码已设置，局域网设备现在可以登录了'
+              : '密码已修改，所有设备（含本机）已退出，请重新登录',
+        })
+        setConfigured(true)
         setCurrent('')
         setNext('')
       } else if (res.status === 401) {
@@ -135,15 +153,19 @@ export function SettingsCard() {
     createElement(
       'form',
       { style: styles.field, onSubmit: submitPassword },
-      createElement('h3', { style: { margin: 0 } }, '修改密码'),
-      createElement('label', { style: styles.label }, '当前密码'),
-      createElement('input', {
-        type: 'password',
-        style: styles.input,
-        value: current,
-        onChange: (e: { target: { value: string } }) => setCurrent(e.target.value),
-        autoComplete: 'current-password',
-      }),
+      createElement('h3', { style: { margin: 0 } }, configured === false ? '设置密码' : '修改密码'),
+      configured === false
+        ? createElement('p', { style: styles.small }, '首次使用：在本机设置登录密码（局域网设备登录用）')
+        : createElement('label', { style: styles.label }, '当前密码'),
+      configured === false
+        ? null
+        : createElement('input', {
+            type: 'password',
+            style: styles.input,
+            value: current,
+            onChange: (e: { target: { value: string } }) => setCurrent(e.target.value),
+            autoComplete: 'current-password',
+          }),
       createElement('label', { style: styles.label }, '新密码（4~128 字符）'),
       createElement('input', {
         type: 'password',
@@ -154,8 +176,12 @@ export function SettingsCard() {
       }),
       createElement(
         'button',
-        { type: 'submit', style: styles.button, disabled: busy || current === '' || next === '' },
-        '修改密码并退出所有设备',
+        {
+          type: 'submit',
+          style: styles.button,
+          disabled: busy || next === '' || (configured !== false && current === ''),
+        },
+        configured === false ? '设置密码' : '修改密码并退出所有设备',
       ),
     ),
     message !== null

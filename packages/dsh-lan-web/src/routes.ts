@@ -209,7 +209,7 @@ function logout(req: IncomingMessage, res: ServerResponse, deps: LanWebDeps): vo
 
 function status(req: IncomingMessage, res: ServerResponse, deps: LanWebDeps): void {
   if (isLoopback(req)) {
-    writeJson(res, 200, { exempt: true })
+    writeJson(res, 200, { exempt: true, configured: deps.store.hasPassword() })
     return
   }
   if (requireSession(req, res, deps) !== null) writeJson(res, 200, { ok: true })

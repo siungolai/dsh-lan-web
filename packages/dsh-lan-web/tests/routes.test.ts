@@ -187,6 +187,8 @@ describe('session gate', () => {
       const loopback = await call(e.base, 'GET', '/api/lan-web/status')
       expect(loopback.status).toBe(200)
       expect((loopback.body as { exempt?: boolean }).exempt).toBe(true)
+      // First-time state: password already configured via withPassword()
+      expect((loopback.body as { configured?: boolean }).configured).toBe(true)
 
       const noCookie = await call(e.base, 'GET', '/api/lan-web/status', { lanHost: true })
       expect(noCookie.status).toBe(401)
