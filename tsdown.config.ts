@@ -10,7 +10,7 @@
  * Types ship from lib/types (tsc); the preset keeps `clean: false` so tsc's
  * output survives the bundling pass.
  */
-import { clientBundle } from '../../shared/tsdown.client.ts'
+import { clientBundle } from './shared/tsdown.client.ts'
 
 export default clientBundle('dsh-lan-web', ['src/index.ts'], {
   libExternal: [

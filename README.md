@@ -32,7 +32,7 @@ Requirements / 要求：DSH `>= 0.1.0-rc.6`，Node `^22.19.0 || >=24.0.0`。
 git clone https://github.com/siungolai/dsh-lan-web.git
 
 # 2. Build the plugin package
-cd dsh-lan-web/packages/dsh-lan-web
+cd dsh-lan-web
 npm install && npm run build
 
 # 3. Register into your web profile (dev-style link install)
@@ -80,7 +80,6 @@ dsh-lan-web:
 See [PLAN.md](./PLAN.md) for architecture, milestones, and acceptance criteria.
 
 ```bash
-cd packages/dsh-lan-web
 npm run typecheck   # type check
 npm run build       # tsc + tsdown → lib/
 npm test            # vitest unit tests
