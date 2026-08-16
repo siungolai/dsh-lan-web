@@ -45,6 +45,7 @@ export class MuxClient {
   private ws: WebSocket | null = null
   private retry = 0
   private resynced = false
+  private visibilityHandler: (() => void) | null = null
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private disposed = false
 
@@ -52,6 +53,15 @@ export class MuxClient {
 
   connect(): void {
     this.resynced = false
+    // No heartbeats exist on this channel (protocol is downstream-only, an
+    // upstream ping would get the socket closed with 1008) — a sleeping phone
+    // can silently half-open the connection. Reconnect when the tab returns.
+    const onVisibility = (): void => {
+      if (document.visibilityState !== 'visible') return
+      if (this.ws !== null && this.ws.readyState === WebSocket.OPEN) this.ws.close()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    this.visibilityHandler = onVisibility
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const ws = new WebSocket(`${protocol}//${window.location.host}/api/events.mux`)
     this.ws = ws
@@ -90,6 +100,8 @@ export class MuxClient {
   dispose(): void {
     this.disposed = true
     if (this.retryTimer !== null) clearTimeout(this.retryTimer)
+    if (this.visibilityHandler !== null) document.removeEventListener('visibilitychange', this.visibilityHandler)
+    this.visibilityHandler = null
     this.ws?.close()
     this.ws = null
   }

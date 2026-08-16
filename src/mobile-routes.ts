@@ -83,7 +83,7 @@ ${VIEWPORT_META}
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ password: pw.value }),
     }).then(function (res) {
-      if (res.status === 200) { location.href = '/m'; return; }
+      if (res.status === 200) { location.href = '/lan'; return; }
       if (res.status === 429) { err.textContent = '尝试次数过多，请稍后再试'; }
       else if (res.status === 403) { err.textContent = '管理员尚未配置密码，局域网访问暂不可用'; }
       else if (res.status === 401) { err.textContent = '密码错误'; }
@@ -125,7 +125,7 @@ export function registerMobileRoutes(ctx: Context, store: LanWebStore): void {
 }
 
 /** True when the request may see the app (loopback exempt, or valid cookie). */
-function authed(req: IncomingMessage, store: LanWebStore): boolean {
+function isAuthed(req: IncomingMessage, store: LanWebStore): boolean {
   if (isLoopback(req)) return true
   const token = readCookie(req, COOKIE_NAME)
   return token !== undefined && store.validate(token) !== null
@@ -145,7 +145,7 @@ async function handlePage(req: IncomingMessage, res: ServerResponse, store: LanW
     writeHtml(res, 405, '<h1>405</h1>')
     return
   }
-  writeHtml(res, 200, authed(req, store) ? APP_SHELL : LOGIN_SHELL)
+  writeHtml(res, 200, isAuthed(req, store) ? APP_SHELL : LOGIN_SHELL)
 }
 
 let bundleCache: { etag: string; code: Buffer } | null = null
@@ -155,7 +155,7 @@ async function handleBundle(req: IncomingMessage, res: ServerResponse, store: La
     res.writeHead(405).end()
     return
   }
-  if (!authed(req, store)) {
+  if (!isAuthed(req, store)) {
     res.writeHead(401).end()
     return
   }

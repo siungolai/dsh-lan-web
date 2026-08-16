@@ -59,7 +59,7 @@ export function apply(ctx: Context) {
     loginLimiter: new RateLimiter(10, 30_000),
     getSessionDays: () => config.sessionDays,
   })
-  // M5: /m mobile surface (app shell gated by the same login gate).
+  // M5: /lan mobile surface (app shell gated by the same login gate).
   registerMobileRoutes(ctx, store)
   store
     .load()

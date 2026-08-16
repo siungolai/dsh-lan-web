@@ -1,5 +1,5 @@
 /**
- * Mobile login view — the client-side backstop of the /m dual-layer gate.
+ * Mobile login view — the client-side backstop of the /lan dual-layer gate.
  * The route already refuses the app shell to LAN clients without a cookie;
  * this covers sessions that expire (kicked / password changed) mid-browse.
  */

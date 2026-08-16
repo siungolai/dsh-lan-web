@@ -35,7 +35,7 @@ export async function rpc<T>(method: string, payload?: unknown): Promise<T> {
       body: JSON.stringify({ type: 'client-request', rpcId, method, payload }),
     })
   } catch (error) {
-    throw new Error(`网络错误：${error instanceof Error ? error.message : String(error)}`)
+    throw new RpcError('network', error instanceof Error ? error.message : String(error))
   }
   if (res.status === 401) throw new RpcError('unauthorized', undefined, 401)
   if (!res.ok) throw new RpcError(`http_${res.status}`, undefined, res.status)

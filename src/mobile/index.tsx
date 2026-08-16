@@ -1,5 +1,5 @@
 /**
- * dsh-lan-web — /m mobile surface entry (standalone page bundle).
+ * dsh-lan-web — /lan mobile surface entry (standalone page bundle).
  *
  * Bootstraps the two-level app. The /m route already refuses the app shell
  * to LAN clients without a cookie; this client-side status probe is the

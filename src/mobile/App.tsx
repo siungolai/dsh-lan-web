@@ -112,10 +112,19 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
     void refreshList()
   }, [refreshList])
 
+  // System/hardware back button pops the conversation back to the list
+  // (spec: two-level navigation with back).
+  useEffect(() => {
+    const onPop = (): void => setView({ kind: 'list' })
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
+
   /* ------------------------- conversation ------------------------- */
   const openConversation = useCallback(
     async (sessionId: string): Promise<void> => {
       setView({ kind: 'conv', sessionId })
+      history.pushState({ surface: 'conv' }, '')
       setMessages([])
       setHasMore(false)
       setConvTitle('')
@@ -125,10 +134,14 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
       try {
         const result = await sessionHistory(sessionId, { maxMessages: HISTORY_PAGE })
         const derived = deriveMessages(result.events)
-        setMessages(derived)
         setHasMore(result.hasMore)
         const last = result.events[result.events.length - 1]
-        appliedSeqRef.current = last !== undefined ? last.event.seq : 0
+        const loadedSeq = last !== undefined ? last.event.seq : 0
+        appliedSeqRef.current = loadedSeq
+        // Live events that arrived while the page was loading (seq > loadedSeq)
+        // must survive the history swap — including in-flight turn-N streams
+        // (this also covers the reconnect resync path).
+        setMessages((prev) => [...derived, ...prev.filter((m) => m.seq > loadedSeq)])
         const session = (await listSessions()).find((s) => s.sessionId === sessionId)
         setConvTitle(session !== undefined ? titleOf(session) : '')
       } catch (error) {
@@ -152,7 +165,9 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
     if (first === undefined) return
     setLoadingHistory(true)
     try {
-      const beforeSeq = first.seq - 1
+      // Server pagination is EXCLUSIVE (events with seq < beforeSeq): passing
+      // first.seq - 1 would silently drop the event at exactly seq-1.
+      const beforeSeq = first.seq
       const result = await sessionHistory(view0.sessionId, { beforeSeq, maxMessages: HISTORY_PAGE })
       const older = deriveMessages(result.events)
       setMessages((prev) => [...older, ...prev])
@@ -194,12 +209,16 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
   const applyEvent = useCallback(
     (frame: { sessionId: string; event: SessionEvent }): void => {
       const { event } = frame
+      const v = viewRef.current
+      if (v.kind !== 'conv' || frame.sessionId !== v.sessionId) {
+        // Other sessions still move the list; the seq guard below must only
+        // ever see THIS session's seqs (seq is per-session).
+        scheduleListRefresh()
+        return
+      }
       if (event.seq <= appliedSeqRef.current) return
       appliedSeqRef.current = event.seq
       scheduleListRefresh()
-
-      const v = viewRef.current
-      if (v.kind !== 'conv' || frame.sessionId !== v.sessionId) return
       const data = (event.data ?? {}) as { content?: unknown; turn?: number; chunk?: { type?: string; text?: string; index?: number } }
 
       if (event.type === 'user/message') {
@@ -222,7 +241,7 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
         const final = textOfBlocks(data.content)
         const key = `a-${event.seq}`
         setMessages((prev) => [
-          ...prev.filter((m) => m.role === 'assistant' && !m.done),
+          ...prev.filter((m) => !(m.role === 'assistant' && !m.done && m.key.startsWith('turn-'))),
           { key, role: 'assistant', text: final, done: true, seq: event.seq },
         ])
         scrollToBottomSoon()
