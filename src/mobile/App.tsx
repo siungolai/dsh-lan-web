@@ -222,6 +222,15 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
   const skillsCache = useRef(new Map<string, SkillSummary[]>())
   const gestureRef = useRef<{ start: number; cursor: number; seq: number } | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  // High-frequency assistant chunks are batched into a buffer and flushed
+  // once per animation frame — the raw mux rate is ~270 frames/s and each
+  // setMessages rebuilds the whole array (jank on phones otherwise).
+  const chunkBuffer = useRef(new Map<string, { kind: 'text' | 'reasoning'; turn: number; append: string }>())
+  const flushScheduled = useRef(false)
+  // Per-session message cache: switching away and back keeps loaded pages.
+  const messagesCache = useRef(new Map<string, Message[]>())
+  const messagesRef = useRef<Message[]>([])
+  messagesRef.current = messages
   const [hasMore, setHasMore] = useState(false)
   const [loadingHistory, setLoadingHistory] = useState(false)
   const [creating, setCreating] = useState(false)
@@ -263,23 +272,45 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
     void refreshList()
   }, [refreshList])
 
+  const saveCurrentMessages = useCallback((sessionId: string): void => {
+    messagesCache.current.set(sessionId, messagesRef.current)
+  }, [])
+
+  const goBackToList = useCallback((): void => {
+    const v = viewRef.current
+    if (v.kind === 'conv') saveCurrentMessages(v.sessionId)
+    setView({ kind: 'list' })
+  }, [saveCurrentMessages])
+
   // System/hardware back button pops the conversation back to the list
   // (spec: two-level navigation with back).
   useEffect(() => {
-    const onPop = (): void => setView({ kind: 'list' })
+    const onPop = (): void => goBackToList()
     window.addEventListener('popstate', onPop)
     return () => window.removeEventListener('popstate', onPop)
-  }, [])
+  }, [goBackToList])
 
   /* ------------------------- conversation ------------------------- */
   const openConversation = useCallback(
     async (sessionId: string): Promise<void> => {
+      const v0 = viewRef.current
+      if (v0.kind === 'conv') saveCurrentMessages(v0.sessionId)
       setView({ kind: 'conv', sessionId })
       history.pushState({ surface: 'conv' }, '')
+      chunkBuffer.current = new Map()
+      setSendError(null)
+      const cached = messagesCache.current.get(sessionId)
+      if (cached !== undefined && cached.length > 0) {
+        // Restore the cached page(s) and merge only what's newer.
+        setMessages(cached)
+        appliedSeqRef.current = cached.reduce((max, m) => Math.max(max, m.seq), 0)
+        setConvTitle('')
+        void resyncConversation(sessionId)
+        return
+      }
       setMessages([])
       setHasMore(false)
       setConvTitle('')
-      setSendError(null)
       appliedSeqRef.current = 0
       setLoadingHistory(true)
       try {
@@ -414,6 +445,51 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
     return () => client.dispose()
   }, [resyncConversation])
 
+  const scrollToBottomSoon = useCallback((): void => {
+    requestAnimationFrame(() => {
+      const el = scrollRef.current
+      if (el !== null) el.scrollTop = el.scrollHeight
+    })
+  }, [])
+
+  const queueChunk = useCallback((key: string, kind: 'text' | 'reasoning', turn: number, append: string): void => {
+    const buf = chunkBuffer.current
+    const cur = buf.get(key)
+    if (cur !== undefined) cur.append += append
+    else buf.set(key, { kind, turn, append })
+    if (!flushScheduled.current) {
+      flushScheduled.current = true
+      requestAnimationFrame(() => {
+        flushScheduled.current = false
+        flushChunksRef.current()
+      })
+    }
+  }, [])
+
+  const flushChunks = useCallback((): void => {
+    const buf = chunkBuffer.current
+    if (buf.size === 0) return
+    chunkBuffer.current = new Map()
+    setMessages((prev) => {
+      let next = prev
+      for (const [key, chunk] of buf) {
+        const existing = next.find((m) => m.key === key)
+        if (existing !== undefined) {
+          next = next.map((m) => (m.key === key ? { ...m, text: m.text + chunk.append, done: false } : m))
+        } else {
+          next = [...next, { key, kind: chunk.kind, role: 'assistant', text: chunk.append, done: false, seq: 0 }]
+        }
+      }
+      return next
+    })
+    scrollToBottomSoon()
+  }, [scrollToBottomSoon])
+
+  // Flush is referenced from a rAF scheduled by queueChunk; keep the latest
+  // callback reachable without re-creating the rAF closure.
+  const flushChunksRef = useRef(flushChunks)
+  flushChunksRef.current = flushChunks
+
   const applyEvent = useCallback(
     (frame: MuxEventFrame): void => {
       const { event } = frame
@@ -439,15 +515,7 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
       } else if (event.type === 'assistant/chunk') {
         if (data.chunk?.type === 'reasoning-delta' && typeof data.chunk.text === 'string') {
           const turn = data.turn ?? 0
-          const key = reasoningKey(turn)
-          setMessages((prev) => {
-            const existing = prev.find((m) => m.key === key && m.kind === 'reasoning')
-            if (existing !== undefined) {
-              return prev.map((m) => (m.key === key ? { ...m, text: m.text + data.chunk!.text! } : m))
-            }
-            return [...prev, { key, kind: 'reasoning', role: 'assistant', text: data.chunk!.text!, done: false, seq: event.seq }]
-          })
-          scrollToBottomSoon()
+          queueChunk(reasoningKey(turn), 'reasoning', turn, data.chunk.text)
         } else if (data.chunk?.type === 'tool-call-delta' && typeof data.chunk.name === 'string') {
           const turn = data.turn ?? 0
           const key = `tcp-${turn}`
@@ -457,19 +525,10 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
             if (existing !== undefined) return prev
             return [...prev, { key, kind: 'tool-pending', role: 'assistant', text: label, done: false, seq: event.seq }]
           })
-          scrollToBottomSoon()
         } else if (data.chunk?.type === 'text-delta' && typeof data.chunk.text === 'string') {
           flushReasoning(data.turn ?? 0)
           const turn = data.turn ?? 0
-          const key = `turn-${turn}`
-          setMessages((prev) => {
-            const existing = prev.find((m) => m.key === key)
-            if (existing !== undefined) {
-              return prev.map((m) => (m.key === key ? { ...m, text: m.text + data.chunk!.text!, done: false } : m))
-            }
-            return [...prev, { key, kind: 'text', role: 'assistant', text: data.chunk!.text!, done: false, seq: event.seq }]
-          })
-          scrollToBottomSoon()
+          queueChunk(`turn-${turn}`, 'text', turn, data.chunk.text)
         }
       } else if (event.type === 'tool/call') {
         const turn = data.turn ?? 0
@@ -542,6 +601,7 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
           return existing !== undefined ? prev.map((m) => (m.key === key ? card : m)) : [...prev, card]
         })
       } else if (event.type === 'turn/end') {
+        flushChunks()
         const turn = data.turn ?? 0
         flushReasoning(turn)
         setMessages((prev) => prev.map((m) => (m.key === `turn-${turn}` ? { ...m, done: true } : m)))
@@ -550,15 +610,8 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
         if (typeof title === 'string') setConvTitle(title)
       }
     },
-    [scheduleListRefresh],
+    [scheduleListRefresh, queueChunk, flushChunks],
   )
-
-  const scrollToBottomSoon = useCallback((): void => {
-    requestAnimationFrame(() => {
-      const el = scrollRef.current
-      if (el !== null) el.scrollTop = el.scrollHeight
-    })
-  }, [])
 
   /* ------------------------- skill menu (desktop / parity) ------------------------- */
   const openSkillMenu = useCallback(
@@ -758,7 +811,7 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
   return (
     <div style={style.root}>
       <div style={style.header}>
-        <button type="button" style={style.backButton} onClick={() => setView({ kind: 'list' })} aria-label="返回">
+        <button type="button" style={style.backButton} onClick={goBackToList} aria-label="返回">
           ‹
         </button>
         <div style={style.headerTitle}>{convTitle !== '' ? convTitle : '对话'}</div>
