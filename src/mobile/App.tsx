@@ -45,13 +45,28 @@ function textOfBlocks(content: unknown): string {
     .join('')
 }
 
+/**
+ * Extract the plain text of a user/assistant message event. Wire shapes
+ * (verified against the live API): user/message carries the message flat in
+ * `data.content`, while assistant/message nests it at `data.message.content`
+ * ({turn, step, message, usage}). Both are handled here.
+ */
+export function messageText(event: SessionEvent): string {
+  const data = event.data as { content?: unknown; message?: { content?: unknown } }
+  return textOfBlocks(data.message?.content ?? data.content)
+}
+
 function deriveMessages(entries: HistoryEntry[]): Message[] {
   const out: Message[] = []
   for (const { event } of entries) {
-    if (event.type === 'user/message') {
-      out.push({ key: `u-${event.seq}`, role: 'user', text: textOfBlocks((event.data as { content?: unknown })?.content), done: true, seq: event.seq })
-    } else if (event.type === 'assistant/message') {
-      out.push({ key: `a-${event.seq}`, role: 'assistant', text: textOfBlocks((event.data as { content?: unknown })?.content), done: true, seq: event.seq })
+    if (event.type === 'user/message' || event.type === 'assistant/message') {
+      out.push({
+        key: `${event.type === 'user/message' ? 'u' : 'a'}-${event.seq}`,
+        role: event.type === 'user/message' ? 'user' : 'assistant',
+        text: messageText(event),
+        done: true,
+        seq: event.seq,
+      })
     }
   }
   return out
@@ -265,7 +280,7 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
       const data = (event.data ?? {}) as { content?: unknown; turn?: number; chunk?: { type?: string; text?: string; index?: number } }
 
       if (event.type === 'user/message') {
-        setMessages((prev) => [...prev, { key: `u-${event.seq}`, role: 'user', text: textOfBlocks(data.content), done: true, seq: event.seq }])
+        setMessages((prev) => [...prev, { key: `u-${event.seq}`, role: 'user', text: messageText(event), done: true, seq: event.seq }])
         scrollToBottomSoon()
       } else if (event.type === 'assistant/chunk') {
         if (data.chunk?.type === 'text-delta' && typeof data.chunk.text === 'string') {
@@ -281,7 +296,7 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
           scrollToBottomSoon()
         }
       } else if (event.type === 'assistant/message') {
-        const final = textOfBlocks(data.content)
+        const final = messageText(event)
         const key = `a-${event.seq}`
         setMessages((prev) => [
           ...prev.filter((m) => !(m.role === 'assistant' && !m.done && m.key.startsWith('turn-'))),
