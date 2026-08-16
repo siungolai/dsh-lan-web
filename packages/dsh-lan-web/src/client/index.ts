@@ -15,6 +15,11 @@ import { SettingsCard } from './settings-card.tsx'
 
 export const name = 'dsh-lan-web-client'
 
+// Browser-side cordis row services: the Loader builds the row's inject from
+// THIS export (dsh.client.inject in package.json is only boot metadata).
+// 'slots' is provided by @deepseek-ai/dsh-client-runtime (client half).
+export const inject = ['slots']
+
 const STATUS_URL = '/api/lan-web/status'
 const LOGIN_URL = '/api/lan-web/login'
 
