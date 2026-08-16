@@ -5,5 +5,9 @@ lib/
 dist/
 *.log
 .DS_Store
+# 本地设计文档（除 README.md 外不上传 GitHub）
 PLAN.md
+ROADMAP.md
+CONTEXT.md
+docs/
 handoff*.md
