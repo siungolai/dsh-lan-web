@@ -1,5 +1,5 @@
 /**
- * Mobile surface (/m) route tests: real node http server + real store.
+ * Mobile surface (/lan) route tests: real node http server + real store.
  * Covers the dual-layer login gate on the page and bundle routes —
  * loopback exempt, LAN requires a valid session cookie.
  */
@@ -109,33 +109,33 @@ afterEach(async () => {
   await env.close()
 })
 
-describe('mobile surface /m gate', () => {
+describe('mobile surface /lan gate', () => {
   it('loopback: serves the app shell', async () => {
-    const res = await call(env.base, '/m')
+    const res = await call(env.base, '/lan')
     expect(res.status).toBe(200)
     expect(res.contentType).toContain('text/html')
-    expect(res.body).toContain('/m/app.js')
+    expect(res.body).toContain('/lan/app.js')
     expect(res.body).not.toContain('id="pw"')
   })
 
   it('LAN without cookie: serves the login shell (no app shell)', async () => {
-    const res = await call(env.base, '/m', undefined, true)
+    const res = await call(env.base, '/lan', undefined, true)
     expect(res.status).toBe(200)
     expect(res.body).toContain('id="pw"')
-    expect(res.body).not.toContain('/m/app.js')
+    expect(res.body).not.toContain('/lan/app.js')
   })
 
   it('LAN with a valid session cookie: serves the app shell', async () => {
     const token = env.store.issue('mobile-test')
-    const res = await call(env.base, '/m', `dsh_lan_web_session=${token}`, true)
+    const res = await call(env.base, '/lan', `dsh_lan_web_session=${token}`, true)
     expect(res.status).toBe(200)
-    expect(res.body).toContain('/m/app.js')
+    expect(res.body).toContain('/lan/app.js')
   })
 
   it('bundle: 401 for LAN without cookie, 200 for loopback', async () => {
-    const denied = await call(env.base, '/m/app.js', undefined, true)
+    const denied = await call(env.base, '/lan/app.js', undefined, true)
     expect(denied.status).toBe(401)
-    const ok = await call(env.base, '/m/app.js')
+    const ok = await call(env.base, '/lan/app.js')
     expect(ok.status).toBe(200)
     expect(ok.contentType).toContain('text/javascript')
     expect(ok.body.length).toBeGreaterThan(1000)

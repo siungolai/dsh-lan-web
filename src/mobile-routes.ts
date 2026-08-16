@@ -1,9 +1,14 @@
 /**
- * dsh-lan-web — /m mobile surface routes (Host half).
+ * dsh-lan-web — /lan mobile surface routes (Host half).
  *
- *   GET /m        → app shell (LAN without a valid login session gets a
- *                   self-contained login shell instead; loopback exempt)
- *   GET /m/app.js → the standalone mobile bundle (lib/mobile.js), same gate
+ * NOTE: the surface lives at /lan, NOT /m — @linxin666/dsh-remote-web-ui
+ * owns the exact /m and /m/mobile.js routes (register() hard-throws on a
+ * duplicate (kind, path), which once took the whole plugin tree down). The
+ * defensive registration below keeps a future collision from breaking boot.
+ *
+ *   GET /lan        → app shell (LAN without a valid login session gets a
+ *                     self-contained login shell instead; loopback exempt)
+ *   GET /lan/app.js → the standalone mobile bundle (lib/mobile.js), same gate
  *
  * The login gate is dual-layer here too: the route itself refuses the app
  * shell to unauthenticated LAN clients (server side), and the app JS also
@@ -32,7 +37,7 @@ ${VIEWPORT_META}
 </head>
 <body>
 <div id="root"></div>
-<script type="module" src="/m/app.js"></script>
+<script type="module" src="/lan/app.js"></script>
 </body>
 </html>`
 
@@ -101,8 +106,22 @@ ${VIEWPORT_META}
 </html>`
 
 export function registerMobileRoutes(ctx: Context, store: LanWebStore): void {
-  ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/m', handler: (req, res) => void handlePage(req, res, store) }))
-  ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/m/app.js', handler: (req, res) => void handleBundle(req, res, store) }))
+  for (const route of [
+    { kind: 'exact' as const, path: '/lan', handler: (req: IncomingMessage, res: ServerResponse) => void handlePage(req, res, store) },
+    { kind: 'exact' as const, path: '/lan/app.js', handler: (req: IncomingMessage, res: ServerResponse) => void handleBundle(req, res, store) },
+  ]) {
+    ctx.effect(() => {
+      try {
+        return ctx.webServer.register(route)
+      } catch (error) {
+        // Another plugin already owns this (kind, path): degrade gracefully —
+        // the mobile surface is unavailable, but the login gate must not take
+        // the whole plugin tree down with it.
+        console.warn(`[dsh-lan-web] mobile surface route ${route.path} unavailable (another plugin owns it?):`, error)
+        return () => {}
+      }
+    })
+  }
 }
 
 /** True when the request may see the app (loopback exempt, or valid cookie). */
