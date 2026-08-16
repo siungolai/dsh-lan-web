@@ -62,7 +62,11 @@ describe('client half activation', () => {
     } as never)
     await new Promise((resolve) => setTimeout(resolve, 120))
     const slots = ctx.get('slots', false) as unknown as SlotsMock | undefined
-    expect(slots?.registrations.some((r) => r.name === 'settings.section' && r.id === 'dsh-lan-web')).toBe(true)
+    expect(
+      slots?.registrations.some(
+        (r) => r.name === 'settings.section' && r.id === 'dsh-lan-web' && r.label === '局域网访问',
+      ),
+    ).toBe(true)
     // Gate machinery: no overlay should be mounted for an authenticated status.
     expect(document.body.querySelector('div[style*="2147483000"]')).toBeNull()
   })

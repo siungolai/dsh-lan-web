@@ -49,7 +49,10 @@ export function apply(ctx: ClientContext) {
   }
 
   // --- M2: settings card (official settings.section slot) ------------
-  ctx.slots.register({ name: 'settings.section', id: 'dsh-lan-web' }, SettingsCard)
+  ctx.slots.register(
+    { name: 'settings.section', id: 'dsh-lan-web', label: '局域网访问', order: 100 },
+    SettingsCard,
+  )
 
   // --- M3: responsive styles (narrow viewport, touch-friendly) -------
   // Conservative generic rules: safe across GUI layout changes, desktop
