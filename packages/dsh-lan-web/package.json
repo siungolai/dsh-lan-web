@@ -62,15 +62,22 @@
     "@types/react-dom": "~18.3.0",
     "lightningcss": "^1.32.0",
     "tsdown": "^0.22.2",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.8",
+    "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.6"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && tsdown",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "watch": "tsdown --watch"
+    "watch": "tsdown --watch",
+    "test": "vitest run"
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/siungolai/dsh-lan-web.git"
+  },
+  "dependencies": {
+    "schemastery": "^3.18.0"
   }
 }
