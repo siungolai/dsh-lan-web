@@ -17,6 +17,7 @@ import { DEFAULT_LAN_WEB_CONFIG, lanWebConfigSchema, type LanWebConfig } from '.
 import { LanWebStore } from './store.ts'
 import { RateLimiter } from './rate-limit.ts'
 import { registerLanWebRoutes } from './routes.ts'
+import { registerMobileRoutes } from './mobile-routes.ts'
 import { POLYFILL_SCRIPT } from './crypto.ts'
 
 export const name = 'dsh-lan-web'
@@ -58,6 +59,8 @@ export function apply(ctx: Context) {
     loginLimiter: new RateLimiter(10, 30_000),
     getSessionDays: () => config.sessionDays,
   })
+  // M5: /m mobile surface (app shell gated by the same login gate).
+  registerMobileRoutes(ctx, store)
   store
     .load()
     .then(() => store.installExitFlush())

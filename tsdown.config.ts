@@ -10,11 +10,18 @@
  * Types ship from lib/types (tsc); the preset keeps `clean: false` so tsc's
  * output survives the bundling pass.
  */
-import { clientBundle } from './shared/tsdown.client.ts'
+import { clientBundle, mobileBundle } from './shared/tsdown.client.ts'
 
-export default clientBundle('dsh-lan-web', ['src/index.ts'], {
+const base = clientBundle('dsh-lan-web', ['src/index.ts'], {
   libExternal: [
     '@deepseek-ai/dsh-host-webserver',
     '@deepseek-ai/dsh-settings',
   ],
 })
+
+// The /m mobile surface is a standalone page bundle (self-contained React,
+// served by the plugin's own route — no GUI module loader).
+export default (inline: Parameters<typeof base>[0]) => [
+  ...base(inline),
+  mobileBundle('dsh-lan-web', 'src/mobile/index.tsx'),
+]

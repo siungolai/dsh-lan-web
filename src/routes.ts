@@ -102,7 +102,7 @@ export function isLoopback(req: IncomingMessage): boolean {
   return loopbackAddress && loopbackHost
 }
 
-function readCookie(req: IncomingMessage, name: string): string | undefined {
+export function readCookie(req: IncomingMessage, name: string): string | undefined {
   const header = req.headers.cookie
   if (!header) return undefined
   for (const part of header.split(';')) {
