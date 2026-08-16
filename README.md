@@ -51,11 +51,13 @@ Settings namespace `dsh-lan-web` in `~/.dsh/settings.yaml`:
 
 ```yaml
 dsh-lan-web:
-  password: ''        # 登录密码（首次使用必须设置；未设置时 LAN 访问默认拒绝 fail-closed）
-  sessionDays: 30     # 免登录天数
+  sessionDays: 30     # 会话滑动有效期：无活跃登录多少天后退出
   # httpsCert: ''     # 预留：HTTPS 证书路径（未实现）
   # httpsKey: ''      # 预留：HTTPS 私钥路径（未实现）
 ```
+
+**Password / 密码**：set via the settings card or `POST /api/lan-web/password`（first login must be configured by an admin on the host machine — until then LAN login is refused, fail-closed). The password is stored as a **scrypt hash** in the plugin's private data file (`~/.dsh/dsh-lan-web.json`, mode 0600), never in `settings.yaml`.
+密码经设置卡或 `POST /api/lan-web/password` 设置（首次须在本机配置，未配置前局域网登录一律拒绝，fail-closed）。密码以 **scrypt 哈希** 存于插件私有数据文件（`~/.dsh/dsh-lan-web.json`，权限 0600），绝不写入 `settings.yaml`。
 
 ## Security Model / 安全模型
 

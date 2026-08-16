@@ -47,13 +47,19 @@ export function apply(ctx: ClientContext) {
   ctx.slots.register({ name: 'settings.section', id: 'dsh-lan-web' }, SettingsCard)
 
   // --- M3: responsive styles (narrow viewport, touch-friendly) -------
+  // Conservative generic rules: safe across GUI layout changes, desktop
+  // unaffected (media query only). Layout-specific tuning is a M3 runtime
+  // iteration item (needs real-device DOM inspection).
   const style = document.createElement('style')
   style.dataset.plugin = 'dsh-lan-web'
   style.textContent = `
 @media (max-width: 768px) {
-  #root {
-    --dsh-lan-web-mobile: 1;
+  html { -webkit-text-size-adjust: 100%; }
+  button, a, [role="button"], input, select, textarea {
+    min-height: 44px;
   }
+  input, select, textarea { font-size: 16px; }
+  body { overflow-x: hidden; }
 }
 `
   document.head.appendChild(style)
