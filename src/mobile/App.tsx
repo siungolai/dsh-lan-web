@@ -54,6 +54,18 @@ function deriveMessages(entries: HistoryEntry[]): Message[] {
   return out
 }
 
+/**
+ * Merge a fresh history page into the already-rendered messages WITHOUT
+ * dropping them: only messages with seq beyond the current maximum are new
+ * (pages are ascending; a resync page overlaps the tail of what we have).
+ * This is what keeps older loaded pages alive across WS reconnects.
+ */
+export function mergeDerived(prev: Message[], derived: Message[]): Message[] {
+  const maxSeq = prev.reduce((max, m) => Math.max(max, m.seq), 0)
+  const fresh = derived.filter((m) => m.seq > maxSeq)
+  return fresh.length > 0 ? [...prev, ...fresh] : prev
+}
+
 function formatTime(ts: number): string {
   const d = new Date(ts)
   const now = new Date()
@@ -137,7 +149,9 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
         setHasMore(result.hasMore)
         const last = result.events[result.events.length - 1]
         const loadedSeq = last !== undefined ? last.event.seq : 0
-        appliedSeqRef.current = loadedSeq
+        // Never roll the guard backwards: live events may already have raised
+        // it past the snapshot's tail while the page was loading.
+        appliedSeqRef.current = Math.max(appliedSeqRef.current, loadedSeq)
         // Live events that arrived while the page was loading (seq > loadedSeq)
         // must survive the history swap — including in-flight turn-N streams
         // (this also covers the reconnect resync path).
@@ -153,6 +167,28 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
           const el = scrollRef.current
           if (el !== null) el.scrollTop = el.scrollHeight
         })
+      }
+    },
+    [onSessionExpired],
+  )
+
+  /**
+   * Reconnect resync: re-pull the latest page and merge it into the existing
+   * messages instead of replacing them — older loaded pages (and in-flight
+   * streams) survive. Unlike openConversation this never resets state.
+   */
+  const resyncConversation = useCallback(
+    async (sessionId: string): Promise<void> => {
+      try {
+        const result = await sessionHistory(sessionId, { maxMessages: HISTORY_PAGE })
+        const derived = deriveMessages(result.events)
+        const last = result.events[result.events.length - 1]
+        const loadedSeq = last !== undefined ? last.event.seq : 0
+        appliedSeqRef.current = Math.max(appliedSeqRef.current, loadedSeq)
+        setMessages((prev) => mergeDerived(prev, derived))
+        setHasMore(result.hasMore)
+      } catch (error) {
+        if (error instanceof RpcError && error.status === 401) onSessionExpired()
       }
     },
     [onSessionExpired],
@@ -196,15 +232,15 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
         }
       },
       onResync: () => {
-        // Fresh baselines after (re)connect: re-pull the open conversation
-        // (higher-seq merge; appliedSeqRef resets inside openConversation).
+        // Fresh baselines after (re)connect: merge the latest page into the
+        // open conversation WITHOUT dropping older loaded pages.
         const v = viewRef.current
-        if (v.kind === 'conv') void openConversation(v.sessionId)
+        if (v.kind === 'conv') void resyncConversation(v.sessionId)
       },
     })
     client.connect()
     return () => client.dispose()
-  }, [openConversation])
+  }, [resyncConversation])
 
   const applyEvent = useCallback(
     (frame: { sessionId: string; event: SessionEvent }): void => {
