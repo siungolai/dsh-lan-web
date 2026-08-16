@@ -216,7 +216,6 @@ function status(req: IncomingMessage, res: ServerResponse, deps: LanWebDeps): vo
 }
 
 async function changePassword(req: IncomingMessage, res: ServerResponse, deps: LanWebDeps): Promise<void> {
-  if (requireSession(req, res, deps) === null) return
   let body: unknown
   try {
     body = await readJsonBody(req)
@@ -225,15 +224,27 @@ async function changePassword(req: IncomingMessage, res: ServerResponse, deps: L
     return
   }
   const { current, next } = (body ?? {}) as { current?: unknown; next?: unknown }
-  if (typeof current !== 'string' || typeof next !== 'string') {
-    writeJson(res, 400, { error: 'bad_request' })
-    return
-  }
-  if (next.length < MIN_PASSWORD_LENGTH || next.length > MAX_PASSWORD_LENGTH) {
+  if (typeof next !== 'string' || next.length < MIN_PASSWORD_LENGTH || next.length > MAX_PASSWORD_LENGTH) {
     writeJson(res, 400, { error: 'invalid_password_length' })
     return
   }
-  if (!deps.store.hasPassword() || !(await verifyPassword(current, deps.store.passwordHash))) {
+  // First-time setup: no password exists yet. Only loopback (the host
+  // machine) may claim it — a LAN client must never be able to grab
+  // the gate. No `current` password is required (there is none).
+  if (!deps.store.hasPassword()) {
+    if (!isLoopback(req)) {
+      writeJson(res, 403, { error: 'not_configured' })
+      return
+    }
+    const hash = await hashPassword(next)
+    await deps.store.setPasswordHash(hash)
+    writeJson(res, 200, { ok: true, firstTime: true })
+    return
+  }
+  // Established password: require an authenticated session and the
+  // current password, then bump epoch + clear every session (kick-all).
+  if (requireSession(req, res, deps) === null) return
+  if (typeof current !== 'string' || !(await verifyPassword(current, deps.store.passwordHash))) {
     writeJson(res, 401, { error: 'invalid_credentials' })
     return
   }
