@@ -12,17 +12,21 @@
  * surface's RPC set only — sensitive endpoints stay out of the proxy).
  */
 import { WebSocketServer } from 'ws'
-// dsh-host-apiproxy is dynamically loaded: its transitive tree only exists in
-// the DSH profile at runtime (dev/test installs lack it), and the proxy must
-// degrade gracefully when the service is absent anyway.
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LanWebStore } from './store.ts'
 import { COOKIE_NAME, isLoopback, readCookie } from './routes.ts'
+// Type-only import: erased at compile time — no runtime resolution of
+// dsh-host-apiproxy (its transitive tree only exists inside the DSH profile;
+// the repository install skips peers via legacy-peer-deps).
+import type { ApiProxy } from '@deepseek-ai/dsh-host-apiproxy'
 
 const PROXY_PREFIX = '/api/lan-web/m'
 
-/** RPC methods the mobile surface may proxy. Nothing else is exposed. */
+/** RPC methods the mobile surface may proxy. Nothing else is exposed.
+ * commands/execute is intentionally absent: permission switches go through
+ * the documented session.prompt slash path (`/permission <preset>`), which
+ * the host routes to the command registry. */
 const MOBILE_METHODS = new Set([
   'session.list',
   'session.history',
@@ -31,7 +35,6 @@ const MOBILE_METHODS = new Set([
   'session.models',
   'session.selectModel',
   'skill.list',
-  'commands/execute',
 ])
 
 let rpcCounter = 0
@@ -70,44 +73,58 @@ function readBody(req: IncomingMessage, limit = 32 * 1024): Promise<string> {
 }
 
 export function registerMobileProxy(ctx: Context, store: LanWebStore): void {
-  void (async () => {
-    let mod: typeof import('@deepseek-ai/dsh-host-apiproxy') | null = null
-    try {
-      mod = await import('@deepseek-ai/dsh-host-apiproxy')
-    } catch (error) {
-      console.warn('[dsh-lan-web] dsh-host-apiproxy unavailable — mobile data-plane proxy disabled:', error)
-    }
-    const apiProxy = ctx.get('apiProxy', false)
-    if (mod === null || apiProxy === undefined) {
-      console.warn('[dsh-lan-web] apiProxy service absent — mobile data-plane proxy disabled')
-      return
-    }
-    const handler = mod.toFetchHandler(apiProxy)
+  const apiProxy = ctx.get('apiProxy', false) as ApiProxy | undefined
+  if (apiProxy === undefined) {
+    console.warn('[dsh-lan-web] apiProxy service absent — mobile data-plane proxy disabled')
+    return
+  }
+  ctx.effect(() =>
+    ctx.webServer.register({
+      kind: 'prefix',
+      path: PROXY_PREFIX,
+      handler: (req, res) => void handleProxy(req, res, store, apiProxy),
+    }),
+  )
+  ctx.effect(() =>
+    ctx.webServer.registerUpgrade({
+      path: `${PROXY_PREFIX}/events`,
+      handler: (req, socket, head) => handleEventsUpgrade(ctx, req, socket, head, store),
+    }),
+  )
+}
 
-    ctx.effect(() =>
-      ctx.webServer.register({
-        kind: 'prefix',
-        path: PROXY_PREFIX,
-        handler: (req, res) => void handleProxy(req, res, store, handler),
-      }),
-    )
-    ctx.effect(() =>
-      ctx.webServer.registerUpgrade({
-        path: `${PROXY_PREFIX}/events`,
-        handler: (req, socket, head) => handleEventsUpgrade(ctx, req, socket, head, store),
-      }),
-    )
-  })()
+/* ------------------------- in-process forwarding ------------------------- */
+
+type RpcRequest = { type: 'client-request'; rpcId: string; method: string; payload: unknown }
+
+/** Replay one envelope through the apiProxy method groups (no HTTP loopback).
+ * Method-group params are typed RpcRequest<Payload>; the payload is validated
+ * by the host's own zod schemas at the other end, so the generic envelope is
+ * cast per call. */
+async function forward(apiProxy: ApiProxy, request: RpcRequest): Promise<unknown> {
+  switch (request.method) {
+    case 'session.list':
+      return apiProxy.sessions.list(request as unknown as Parameters<ApiProxy['sessions']['list']>[0])
+    case 'session.history':
+      return apiProxy.sessions.history(request as unknown as Parameters<ApiProxy['sessions']['history']>[0])
+    case 'session.prompt':
+      return apiProxy.sessions.prompt(request as unknown as Parameters<ApiProxy['sessions']['prompt']>[0])
+    case 'session.create':
+      return apiProxy.sessions.create(request as unknown as Parameters<ApiProxy['sessions']['create']>[0])
+    case 'session.models':
+      return apiProxy.sessions.models(request as unknown as Parameters<ApiProxy['sessions']['models']>[0])
+    case 'session.selectModel':
+      return apiProxy.sessions.selectModel(request as unknown as Parameters<ApiProxy['sessions']['selectModel']>[0])
+    case 'skill.list':
+      return apiProxy.skills.list(request as unknown as Parameters<ApiProxy['skills']['list']>[0])
+    default:
+      throw new Error(`method not whitelisted: ${request.method}`)
+  }
 }
 
 /* ------------------------- RPC proxy ------------------------- */
 
-async function handleProxy(
-  req: IncomingMessage,
-  res: ServerResponse,
-  store: LanWebStore,
-  handler: { fetch(input: Request | string, init?: RequestInit): Promise<Response> },
-): Promise<void> {
+async function handleProxy(req: IncomingMessage, res: ServerResponse, store: LanWebStore, apiProxy: ApiProxy): Promise<void> {
   const pathname = new URL(req.url ?? '/', 'http://lan-web.local').pathname
   const method = pathname.slice(PROXY_PREFIX.length + 1)
   if (!MOBILE_METHODS.has(method)) {
@@ -142,20 +159,14 @@ async function handleProxy(
     return
   }
   try {
-    // In-process forwarding (no HTTP loopback): replay the exact envelope
-    // through the apiProxy handler and pass its response through untouched.
-    const upstream = await handler.fetch(`http://lan-web.local/api/${method}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ type: 'client-request', rpcId, method, payload: envelope.payload }),
-    })
-    const text = await upstream.text()
-    writeJson(res, upstream.status, text.length > 0 ? (JSON.parse(text) as unknown) : {})
+    // The method groups return full RpcResponse envelopes — pass through.
+    const response = await forward(apiProxy, { type: 'client-request', rpcId, method, payload: envelope.payload })
+    writeJson(res, 200, response)
   } catch (error) {
-    writeJson(res, 502, {
+    writeJson(res, 200, {
       type: 'server-response',
       rpcId,
-      result: { ok: false, error: { code: 'internal', details: error instanceof Error ? error.message : String(error) } },
+      result: { ok: false, error: { code: 'internal', message: error instanceof Error ? error.message : String(error) } },
     })
   }
 }

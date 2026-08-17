@@ -63,6 +63,8 @@ describe('host half activation', () => {
     const out = redirect!(html)
     expect(out).toContain("location.replace('/lan')")
     expect(out).toContain("dsh_lan_web_ui=desktop")
+    // Touch-screen laptops (desktop UA, maxTouchPoints>=2) must NOT redirect.
+    expect(out).not.toContain('maxTouchPoints')
   })
 
   it('registers the /api/lan-web prefix route while the async store load settles', async () => {

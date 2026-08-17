@@ -34,7 +34,9 @@ export const inject = ['webServer']
  */
 const MOBILE_REDIRECT_SCRIPT = `<script data-dsh-lan-web="ua-redirect">
 (function () {
-  var mobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || navigator.maxTouchPoints >= 2;
+  // UA-based only: a touch-points check would wrongly catch touch-screen
+  // laptops / tablets (desktop UA) and force them to the mobile surface.
+  var mobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
   if (!mobile) return;
   var path = location.pathname;
   if (path === '/lan' || path.indexOf('/lan/') === 0) return;

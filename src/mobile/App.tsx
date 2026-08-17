@@ -10,12 +10,12 @@ import {
   PERMISSION_ICONS,
   RpcError,
   createSession,
-  executeCommand,
   listModels,
   listSessions,
   listSkills,
   permissionsOf,
   selectModel,
+  switchPermission,
   sendPrompt,
   sessionHistory,
   titleOf,
@@ -762,7 +762,7 @@ export function App({ onSessionExpired }: { onSessionExpired: () => void }) {
       if (v.kind !== 'conv') return
       setPermissionSheet(false)
       try {
-        await executeCommand(v.sessionId, `/permission ${value}`)
+        await switchPermission(v.sessionId, value)
         // Optimistic local state; the projection frame confirms/replaces it.
         setPermission((prev) => (prev === null ? prev : { ...prev, currentValue: value }))
       } catch (error) {

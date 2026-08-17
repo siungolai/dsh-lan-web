@@ -4,22 +4,6 @@
  */
 import { vi } from 'vitest'
 
-const { mockHandler } = vi.hoisted(() => ({
-  mockHandler: {
-    fetch: vi.fn(async (_input: Request | string, init?: RequestInit) => {
-      const body = typeof init?.body === 'string' ? init.body : ''
-      return new Response(JSON.stringify({ type: 'server-response', rpcId: 'echo', result: { ok: true, value: { proxied: true, body } } }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      })
-    }),
-  },
-}))
-
-vi.mock('@deepseek-ai/dsh-host-apiproxy', () => ({
-  toFetchHandler: () => mockHandler,
-}))
-
 import http, { type IncomingMessage, type ServerResponse } from 'node:http'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -48,7 +32,15 @@ class WebServerMock extends Service {
   }
 }
 
+const sessionsMethods = {
+  list: vi.fn(async (request: { rpcId: string }) => ({ type: 'server-response', rpcId: request.rpcId, result: { ok: true, value: { items: [{ sessionId: 's1' }] } } })),
+  history: vi.fn(async () => ({ type: 'server-response', rpcId: 'x', result: { ok: true, value: { events: [], hasMore: false } } })),
+}
+
 class ApiProxyMock extends Service {
+  sessions = sessionsMethods
+  skills = { list: vi.fn(async () => ({ type: 'server-response', rpcId: 'x', result: { ok: true, value: { skills: [] } } })) }
+
   constructor(ctx: Context) {
     super(ctx, 'apiProxy')
   }
@@ -64,7 +56,7 @@ interface TestEnv {
 let env: TestEnv
 
 beforeEach(async () => {
-  mockHandler.fetch.mockClear()
+  sessionsMethods.list.mockClear()
   const dir = await mkdtemp(path.join(tmpdir(), 'lanweb-proxy-'))
   const filePath = path.join(dir, 'dsh-lan-web.json')
   const ctx = new Context()
@@ -77,8 +69,6 @@ beforeEach(async () => {
   registerMobileProxy(ctx, store)
   const web = ctx.get('webServer', false) as unknown as WebServerMock | undefined
   if (web === undefined) throw new Error('webServer mock missing')
-  // Wait for the async apiproxy load + registration.
-  await new Promise((resolve) => setTimeout(resolve, 50))
   const server = http.createServer((req, res) => {
     const pathname = req.url?.split('?')[0] ?? '/'
     const handler = web.handlers.get(`prefix:${pathname.startsWith('/api/lan-web/m') ? '/api/lan-web/m' : pathname}`)
@@ -132,37 +122,34 @@ async function callProxy(method: string, body: unknown, opts: { cookie?: string;
 }
 
 describe('mobile data-plane proxy', () => {
-  it('registers the prefix route and the events upgrade', () => {
-    // Registered asynchronously in beforeEach; assert via behavior below.
-    expect(env.store.hasPassword()).toBe(true)
-  })
-
-  it('loopback: proxies a whitelisted RPC and passes the envelope through', async () => {
+  it('loopback: proxies a whitelisted RPC through the method groups', async () => {
     const res = await callProxy('/api/lan-web/m/session.list', { type: 'client-request', rpcId: 'r1', method: 'session.list', payload: {} })
     expect(res.status).toBe(200)
-    expect(mockHandler.fetch).toHaveBeenCalledTimes(1)
-    const forwarded = mockHandler.fetch.mock.calls[0]![1] as RequestInit
-    expect(JSON.parse(String(forwarded.body))).toMatchObject({ type: 'client-request', method: 'session.list' })
-    expect(res.body).toMatchObject({ type: 'server-response', rpcId: 'echo', result: { ok: true } })
+    expect(sessionsMethods.list).toHaveBeenCalledTimes(1)
+    const forwarded = sessionsMethods.list.mock.calls[0]![0] as { rpcId: string; method: string; payload: unknown }
+    expect(forwarded).toMatchObject({ type: 'client-request', rpcId: 'r1', method: 'session.list', payload: {} })
+    expect(res.body).toMatchObject({ type: 'server-response', rpcId: 'r1', result: { ok: true } })
   })
 
   it('LAN without cookie: 401 and nothing forwarded', async () => {
     const res = await callProxy('/api/lan-web/m/session.list', { type: 'client-request', rpcId: 'r2', method: 'session.list', payload: {} }, { lanHost: true })
     expect(res.status).toBe(401)
-    expect(mockHandler.fetch).not.toHaveBeenCalled()
+    expect(sessionsMethods.list).not.toHaveBeenCalled()
   })
 
   it('LAN with a valid cookie: proxied', async () => {
     const token = env.store.issue('proxy-test')
     const res = await callProxy('/api/lan-web/m/session.list', { type: 'client-request', rpcId: 'r3', method: 'session.list', payload: {} }, { lanHost: true, cookie: `dsh_lan_web_session=${token}` })
     expect(res.status).toBe(200)
-    expect(mockHandler.fetch).toHaveBeenCalledTimes(1)
+    expect(sessionsMethods.list).toHaveBeenCalledTimes(1)
   })
 
-  it('rejects non-whitelisted methods with 404', async () => {
+  it('rejects non-whitelisted methods with 404 (incl. commands/execute)', async () => {
     const res = await callProxy('/api/lan-web/m/session.export', { type: 'client-request', rpcId: 'r4', method: 'session.export', payload: {} })
     expect(res.status).toBe(404)
-    expect(mockHandler.fetch).not.toHaveBeenCalled()
+    const cmd = await callProxy('/api/lan-web/m/commands/execute', { type: 'client-request', rpcId: 'r5', method: 'commands/execute', payload: {} })
+    expect(cmd.status).toBe(404)
+    expect(sessionsMethods.list).not.toHaveBeenCalled()
   })
 
   it('rejects non-POST with 405', async () => {

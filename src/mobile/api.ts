@@ -191,9 +191,12 @@ export interface PermissionsState {
   currentValue: string
 }
 
-/** Execute a slash command (the ONLY sandbox write path; desktop parity). */
-export async function executeCommand(sessionId: string, line: string): Promise<void> {
-  await rpc('commands/execute', { args: { agentId: sessionId, line } })
+/** Switch the sandbox permission preset.
+ * Sent as a slash text through session.prompt: the host routes a lone
+ * `/`-prefixed text block to the command registry (documented path), so no
+ * commands/execute access is needed from the mobile data plane. */
+export async function switchPermission(sessionId: string, value: string): Promise<void> {
+  await sendPrompt(sessionId, `/permission ${value}`)
 }
 
 export const PERMISSION_ICONS: Record<string, string> = {
